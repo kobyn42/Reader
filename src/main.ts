@@ -5,7 +5,7 @@ import {
 } from "./constants";
 import { registerReaderCommands } from "./commands/register-commands";
 import { DEFAULT_SETTINGS, ReaderSettingTab } from "./settings";
-import type { ReaderPluginSettings } from "./types";
+import type { PageDisplayMode, ReaderPluginSettings } from "./types";
 import { EpubReaderView } from "./views/epub-view";
 
 export default class ReaderPlugin extends Plugin {
@@ -73,6 +73,16 @@ export default class ReaderPlugin extends Plugin {
 			});
 		}
 		await this.app.workspace.revealLeaf(leaf);
+	}
+
+	async applyPageDisplayModeToOpenViews(mode?: PageDisplayMode): Promise<void> {
+		const targetMode = mode ?? this.settings.pageDisplayMode;
+		const leaves = this.app.workspace.getLeavesOfType(VIEW_TYPE_EPUB);
+		const updateTasks = leaves
+			.map((leaf) => (leaf.view instanceof EpubReaderView ? leaf.view : null))
+			.filter((view): view is EpubReaderView => view !== null)
+			.map((view) => view.updatePageDisplayMode(targetMode));
+		await Promise.allSettled(updateTasks);
 	}
 
 	private async handleFileDelete(file: TAbstractFile): Promise<void> {

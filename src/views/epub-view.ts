@@ -8,6 +8,7 @@ import {
 	VIEW_TYPE_EPUB,
 } from "../constants";
 import type ReaderPlugin from "../main";
+import type { PageDisplayMode } from "../types";
 
 interface RelocatedEventPayload {
 	start?: {
@@ -20,6 +21,8 @@ const EMPTY_STATE_TEXT = "Select an EPUB file to start reading.";
 const ERROR_STATE_TEXT = "Unable to render this EPUB file.";
 const LOADING_STATE_TEXT = "Loading EPUB...";
 const MEDIA_FIT_RULE_KEY = "reader-media-fit";
+const AUTO_MIN_SPREAD_WIDTH = 800;
+const ALWAYS_MIN_SPREAD_WIDTH = 0;
 
 export class EpubReaderView extends FileView {
 	private plugin: ReaderPlugin;
@@ -121,11 +124,13 @@ export class EpubReaderView extends FileView {
 			}
 
 			this.readerContainerEl.empty();
+			const pageDisplayMode = this.plugin.settings.pageDisplayMode;
 			const renditionOptions = {
 				width: "100%",
 				height: "100%",
 				flow: "paginated",
-				spread: "auto",
+				spread: this.getSpreadOption(pageDisplayMode),
+				minSpreadWidth: this.getMinSpreadWidth(pageDisplayMode),
 				method: "write",
 			};
 			this.rendition = this.book.renderTo(
@@ -182,6 +187,33 @@ export class EpubReaderView extends FileView {
 		} catch (error: unknown) {
 			console.error("Failed to go to next page", error);
 			new Notice(NOTICE_EPUB_NAVIGATION_FAILED);
+		}
+	}
+
+	async updatePageDisplayMode(mode: PageDisplayMode): Promise<void> {
+		if (!this.rendition) {
+			return;
+		}
+
+		try {
+			const currentLocation = await Promise.resolve(this.rendition.currentLocation() as unknown);
+			const currentCfi = this.extractCurrentCfi(currentLocation);
+			const minSpreadWidth = this.getMinSpreadWidth(mode);
+
+			this.rendition.settings.minSpreadWidth = minSpreadWidth;
+			this.rendition.spread(this.getSpreadOption(mode), minSpreadWidth);
+
+			if (currentCfi) {
+				await this.withTimeout(this.rendition.display(currentCfi), 8000, "re-display current location");
+			} else {
+				await this.withTimeout(this.rendition.display(), 8000, "re-display current location");
+			}
+
+			void this.rendition.reportLocation().catch((error: unknown) => {
+				console.debug("Failed to report location", error);
+			});
+		} catch (error: unknown) {
+			console.warn("Failed to apply page display mode", error);
 		}
 	}
 
@@ -395,6 +427,38 @@ export class EpubReaderView extends FileView {
 		} catch {
 			return withoutHash.trim();
 		}
+	}
+
+	private getSpreadOption(mode: PageDisplayMode): "auto" | "always" | "none" {
+		if (mode === "spread-always") {
+			return "always";
+		}
+		if (mode === "spread-none") {
+			return "none";
+		}
+		return "auto";
+	}
+
+	private getMinSpreadWidth(mode: PageDisplayMode): number {
+		return mode === "spread-always" ? ALWAYS_MIN_SPREAD_WIDTH : AUTO_MIN_SPREAD_WIDTH;
+	}
+
+	private extractCurrentCfi(location: unknown): string | undefined {
+		if (!location || typeof location !== "object") {
+			return undefined;
+		}
+
+		const withStart = location as { start?: { cfi?: unknown } };
+		if (typeof withStart.start?.cfi === "string") {
+			return withStart.start.cfi;
+		}
+
+		const withCfi = location as { cfi?: unknown };
+		if (typeof withCfi.cfi === "string") {
+			return withCfi.cfi;
+		}
+
+		return undefined;
 	}
 
 	private isPrePaginatedLayout(): boolean {
