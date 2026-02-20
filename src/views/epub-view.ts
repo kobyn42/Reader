@@ -41,6 +41,7 @@ export class EpubReaderView extends FileView {
 	private plugin: ReaderPlugin;
 	private book: Book | null = null;
 	private rendition: Rendition | null = null;
+	private keyboardBoundDocuments = new WeakSet<Document>();
 
 	private toolbarEl: HTMLElement | null = null;
 	private readerContainerEl: HTMLElement | null = null;
@@ -98,6 +99,15 @@ export class EpubReaderView extends FileView {
 		await this.applyAppearanceThemeToContents(contents, this.currentResolvedAppearanceTheme);
 	};
 
+	private keyboardNavigationHookHandler = async (contents: Contents): Promise<void> => {
+		const targetDocument = contents.document;
+		if (this.keyboardBoundDocuments.has(targetDocument)) {
+			return;
+		}
+		targetDocument.addEventListener("keydown", this.handleArrowNavigationKeydown);
+		this.keyboardBoundDocuments.add(targetDocument);
+	};
+
 	constructor(leaf: WorkspaceLeaf, plugin: ReaderPlugin) {
 		super(leaf);
 		this.plugin = plugin;
@@ -120,6 +130,7 @@ export class EpubReaderView extends FileView {
 
 	async onOpen(): Promise<void> {
 		this.buildLayout();
+		this.registerDomEvent(window, "keydown", this.handleArrowNavigationKeydown);
 		this.renderState(EMPTY_STATE_TEXT);
 		await this.updateAppearanceTheme(this.plugin.settings.appearanceTheme);
 	}
@@ -266,6 +277,7 @@ export class EpubReaderView extends FileView {
 			this.rendition.on("relocated", this.onRelocatedHandler);
 			this.rendition.hooks.content.register(this.mediaFitHookHandler);
 			this.rendition.hooks.content.register(this.appearanceThemeHookHandler);
+			this.rendition.hooks.content.register(this.keyboardNavigationHookHandler);
 
 			void this.loadToc();
 
@@ -399,6 +411,52 @@ export class EpubReaderView extends FileView {
 		}
 
 		await this.withTimeout(this.rendition.display(), 8000, "display start");
+	}
+
+	private handleArrowNavigationKeydown = (event: KeyboardEvent): void => {
+		if (event.defaultPrevented || event.isComposing) {
+			return;
+		}
+		if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) {
+			return;
+		}
+		if (!this.isActiveReaderView()) {
+			return;
+		}
+		if (!this.rendition) {
+			return;
+		}
+		if (this.isEditableEventTarget(event.target)) {
+			return;
+		}
+
+		if (event.key === "ArrowLeft") {
+			event.preventDefault();
+			void this.prevPage();
+			return;
+		}
+		if (event.key === "ArrowRight") {
+			event.preventDefault();
+			void this.nextPage();
+		}
+	};
+
+	private isActiveReaderView(): boolean {
+		return this.app.workspace.getActiveViewOfType(EpubReaderView) === this;
+	}
+
+	private isEditableEventTarget(target: EventTarget | null): boolean {
+		const maybeNode = target as { nodeType?: number; parentElement?: Element | null } | null;
+		if (!maybeNode) {
+			return false;
+		}
+
+		const eventElement = maybeNode.nodeType === 1 ? (target as Element) : maybeNode.parentElement;
+		if (!eventElement) {
+			return false;
+		}
+
+		return eventElement.closest("input, textarea, select, [contenteditable=''], [contenteditable='true']") !== null;
 	}
 
 	private async loadToc(): Promise<void> {
@@ -675,6 +733,19 @@ export class EpubReaderView extends FileView {
 				console.debug("Failed to detach appearance theme hook handler", error);
 			}
 			try {
+				this.rendition.hooks.content.deregister(this.keyboardNavigationHookHandler);
+			} catch (error: unknown) {
+				console.debug("Failed to detach keyboard navigation hook handler", error);
+			}
+			const contentsList = this.getRenditionContents(this.rendition);
+			for (const contents of contentsList) {
+				try {
+					contents.document.removeEventListener("keydown", this.handleArrowNavigationKeydown);
+				} catch (error: unknown) {
+					console.debug("Failed to detach keyboard navigation listener", error);
+				}
+			}
+			try {
 				this.rendition.destroy();
 			} catch (error: unknown) {
 				console.debug("Failed to destroy rendition", error);
@@ -692,5 +763,6 @@ export class EpubReaderView extends FileView {
 		}
 
 		this.tocLabelByHref.clear();
+		this.keyboardBoundDocuments = new WeakSet<Document>();
 	}
 }
