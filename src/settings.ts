@@ -34,12 +34,13 @@ export class ReaderSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("Page display mode")
-			.setDesc("Choose automatic spread, always two pages, or always a single page.")
+			.setDesc("Choose automatic spread, always two pages, single page, or infinite scroll.")
 			.addDropdown((dropdown) => {
 				dropdown
 					.addOption("spread-auto", "Spread (auto)")
 					.addOption("spread-always", "Two pages")
 					.addOption("spread-none", "Single page")
+					.addOption("scroll-continuous", "Infinite scroll")
 					.setValue(this.plugin.settings.pageDisplayMode)
 					.onChange(async (value) => {
 						this.plugin.settings.pageDisplayMode = value as PageDisplayMode;

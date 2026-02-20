@@ -1,5 +1,5 @@
 export type ReaderLocationMap = Record<string, string>;
-export type PageDisplayMode = "spread-auto" | "spread-always" | "spread-none";
+export type PageDisplayMode = "spread-auto" | "spread-always" | "spread-none" | "scroll-continuous";
 
 export interface ReaderPluginSettings {
 	reopenAtLastPosition: boolean;

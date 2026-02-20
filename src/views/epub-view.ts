@@ -17,6 +17,13 @@ interface RelocatedEventPayload {
 	};
 }
 
+interface DisplayModeRenditionConfig {
+	flow: "paginated" | "scrolled-continuous";
+	manager: "default" | "continuous";
+	spread: "auto" | "always" | "none";
+	minSpreadWidth: number;
+}
+
 const EMPTY_STATE_TEXT = "Select an EPUB file to start reading.";
 const ERROR_STATE_TEXT = "Unable to render this EPUB file.";
 const LOADING_STATE_TEXT = "Loading EPUB...";
@@ -110,51 +117,10 @@ export class EpubReaderView extends FileView {
 	}
 
 	async onLoadFile(file: TFile): Promise<void> {
-		this.ensureLayout();
-		await this.cleanupBook();
-		this.renderState(LOADING_STATE_TEXT);
-
-		try {
-			const buffer = await this.app.vault.readBinary(file);
-			this.book = ePub();
-			await this.withTimeout(this.book.open(buffer, "binary"), 10000, "open epub binary");
-
-			if (!this.readerContainerEl) {
-				throw new Error("Reader container is not initialized.");
-			}
-
-			this.readerContainerEl.empty();
-			const pageDisplayMode = this.plugin.settings.pageDisplayMode;
-			const renditionOptions = {
-				width: "100%",
-				height: "100%",
-				flow: "paginated",
-				spread: this.getSpreadOption(pageDisplayMode),
-				minSpreadWidth: this.getMinSpreadWidth(pageDisplayMode),
-				method: "write",
-			};
-			this.rendition = this.book.renderTo(
-				this.readerContainerEl,
-				renditionOptions as Parameters<Book["renderTo"]>[1],
-			);
-			this.rendition.on("relocated", this.onRelocatedHandler);
-			this.rendition.hooks.content.register(this.mediaFitHookHandler);
-
-			void this.loadToc();
-
-			const savedLocation = this.plugin.settings.reopenAtLastPosition
-				? this.plugin.getLastLocation(file.path)
-				: undefined;
-
-			await this.displayWithFallback(savedLocation);
-			void this.rendition.reportLocation().catch((error: unknown) => {
-				console.debug("Failed to report location", error);
-			});
-		} catch (error: unknown) {
-			console.error("Failed to open EPUB", error);
-			new Notice(NOTICE_EPUB_OPEN_FAILED);
-			this.renderState(ERROR_STATE_TEXT, true);
-		}
+		const savedLocation = this.plugin.settings.reopenAtLastPosition
+			? this.plugin.getLastLocation(file.path)
+			: undefined;
+		await this.openFileWithMode(file, this.plugin.settings.pageDisplayMode, savedLocation);
 	}
 
 	async onUnloadFile(): Promise<void> {
@@ -198,10 +164,23 @@ export class EpubReaderView extends FileView {
 		try {
 			const currentLocation = await Promise.resolve(this.rendition.currentLocation() as unknown);
 			const currentCfi = this.extractCurrentCfi(currentLocation);
-			const minSpreadWidth = this.getMinSpreadWidth(mode);
+			const nextConfig = this.getRenditionConfig(mode);
+			const currentFlow = this.rendition.settings.flow;
+			const shouldRerender = this.isContinuousFlow(currentFlow) !== this.isContinuousFlow(nextConfig.flow);
 
-			this.rendition.settings.minSpreadWidth = minSpreadWidth;
-			this.rendition.spread(this.getSpreadOption(mode), minSpreadWidth);
+			if (shouldRerender) {
+				if (!this.file) {
+					return;
+				}
+				await this.openFileWithMode(this.file, mode, currentCfi);
+				return;
+			}
+
+			this.rendition.settings.minSpreadWidth = nextConfig.minSpreadWidth;
+			if (this.rendition.settings.flow !== nextConfig.flow) {
+				this.rendition.flow(nextConfig.flow);
+			}
+			this.rendition.spread(nextConfig.spread, nextConfig.minSpreadWidth);
 
 			if (currentCfi) {
 				await this.withTimeout(this.rendition.display(currentCfi), 8000, "re-display current location");
@@ -214,6 +193,55 @@ export class EpubReaderView extends FileView {
 			});
 		} catch (error: unknown) {
 			console.warn("Failed to apply page display mode", error);
+		}
+	}
+
+	private async openFileWithMode(
+		file: TFile,
+		mode: PageDisplayMode,
+		preferredLocation?: string,
+	): Promise<void> {
+		this.ensureLayout();
+		await this.cleanupBook();
+		this.renderState(LOADING_STATE_TEXT);
+
+		try {
+			const buffer = await this.app.vault.readBinary(file);
+			this.book = ePub();
+			await this.withTimeout(this.book.open(buffer, "binary"), 10000, "open epub binary");
+
+			if (!this.readerContainerEl) {
+				throw new Error("Reader container is not initialized.");
+			}
+
+			const config = this.getRenditionConfig(mode);
+			this.readerContainerEl.empty();
+			const renditionOptions = {
+				width: "100%",
+				height: "100%",
+				flow: config.flow,
+				manager: config.manager,
+				spread: config.spread,
+				minSpreadWidth: config.minSpreadWidth,
+				method: "write",
+			};
+			this.rendition = this.book.renderTo(
+				this.readerContainerEl,
+				renditionOptions as Parameters<Book["renderTo"]>[1],
+			);
+			this.rendition.on("relocated", this.onRelocatedHandler);
+			this.rendition.hooks.content.register(this.mediaFitHookHandler);
+
+			void this.loadToc();
+
+			await this.displayWithFallback(preferredLocation);
+			void this.rendition.reportLocation().catch((error: unknown) => {
+				console.debug("Failed to report location", error);
+			});
+		} catch (error: unknown) {
+			console.error("Failed to open EPUB", error);
+			new Notice(NOTICE_EPUB_OPEN_FAILED);
+			this.renderState(ERROR_STATE_TEXT, true);
 		}
 	}
 
@@ -429,18 +457,42 @@ export class EpubReaderView extends FileView {
 		}
 	}
 
-	private getSpreadOption(mode: PageDisplayMode): "auto" | "always" | "none" {
+	private getRenditionConfig(mode: PageDisplayMode): DisplayModeRenditionConfig {
 		if (mode === "spread-always") {
-			return "always";
+			return {
+				flow: "paginated",
+				manager: "default",
+				spread: "always",
+				minSpreadWidth: ALWAYS_MIN_SPREAD_WIDTH,
+			};
 		}
 		if (mode === "spread-none") {
-			return "none";
+			return {
+				flow: "paginated",
+				manager: "default",
+				spread: "none",
+				minSpreadWidth: AUTO_MIN_SPREAD_WIDTH,
+			};
 		}
-		return "auto";
+		if (mode === "scroll-continuous") {
+			return {
+				flow: "scrolled-continuous",
+				manager: "continuous",
+				spread: "none",
+				minSpreadWidth: ALWAYS_MIN_SPREAD_WIDTH,
+			};
+		}
+
+		return {
+			flow: "paginated",
+			manager: "default",
+			spread: "auto",
+			minSpreadWidth: AUTO_MIN_SPREAD_WIDTH,
+		};
 	}
 
-	private getMinSpreadWidth(mode: PageDisplayMode): number {
-		return mode === "spread-always" ? ALWAYS_MIN_SPREAD_WIDTH : AUTO_MIN_SPREAD_WIDTH;
+	private isContinuousFlow(flow: string | undefined): boolean {
+		return flow === "scrolled" || flow === "scrolled-doc" || flow === "scrolled-continuous";
 	}
 
 	private extractCurrentCfi(location: unknown): string | undefined {
