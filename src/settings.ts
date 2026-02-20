@@ -1,10 +1,11 @@
 import { App, PluginSettingTab, Setting } from "obsidian";
 import type ReaderPlugin from "./main";
-import type { PageDisplayMode, ReaderPluginSettings } from "./types";
+import type { PageDisplayMode, ReaderAppearanceTheme, ReaderPluginSettings } from "./types";
 
 export const DEFAULT_SETTINGS: ReaderPluginSettings = {
 	reopenAtLastPosition: true,
 	pageDisplayMode: "spread-auto",
+	appearanceTheme: "auto",
 	lastLocations: {},
 };
 
@@ -46,6 +47,23 @@ export class ReaderSettingTab extends PluginSettingTab {
 						this.plugin.settings.pageDisplayMode = value as PageDisplayMode;
 						await this.plugin.saveSettings();
 						await this.plugin.applyPageDisplayModeToOpenViews();
+					});
+			});
+
+		new Setting(containerEl)
+			.setName("Appearance theme")
+			.setDesc("Choose the reader theme for toolbar and content area.")
+			.addDropdown((dropdown) => {
+				dropdown
+					.addOption("auto", "Follow Obsidian")
+					.addOption("light", "Light")
+					.addOption("dark", "Dark")
+					.addOption("sepia", "Sepia")
+					.setValue(this.plugin.settings.appearanceTheme)
+					.onChange(async (value) => {
+						this.plugin.settings.appearanceTheme = value as ReaderAppearanceTheme;
+						await this.plugin.saveSettings();
+						await this.plugin.applyAppearanceThemeToOpenViews();
 					});
 			});
 	}

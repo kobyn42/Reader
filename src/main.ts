@@ -5,7 +5,7 @@ import {
 } from "./constants";
 import { registerReaderCommands } from "./commands/register-commands";
 import { DEFAULT_SETTINGS, ReaderSettingTab } from "./settings";
-import type { PageDisplayMode, ReaderPluginSettings } from "./types";
+import type { PageDisplayMode, ReaderAppearanceTheme, ReaderPluginSettings } from "./types";
 import { EpubReaderView } from "./views/epub-view";
 
 export default class ReaderPlugin extends Plugin {
@@ -29,6 +29,15 @@ export default class ReaderPlugin extends Plugin {
 		this.registerEvent(
 			this.app.vault.on("rename", (file, oldPath) => {
 				void this.handleFileRename(file, oldPath);
+			}),
+		);
+
+		this.registerEvent(
+			this.app.workspace.on("css-change", () => {
+				if (this.settings.appearanceTheme !== "auto") {
+					return;
+				}
+				void this.applyAppearanceThemeToOpenViews("auto");
 			}),
 		);
 	}
@@ -82,6 +91,16 @@ export default class ReaderPlugin extends Plugin {
 			.map((leaf) => (leaf.view instanceof EpubReaderView ? leaf.view : null))
 			.filter((view): view is EpubReaderView => view !== null)
 			.map((view) => view.updatePageDisplayMode(targetMode));
+		await Promise.allSettled(updateTasks);
+	}
+
+	async applyAppearanceThemeToOpenViews(theme?: ReaderAppearanceTheme): Promise<void> {
+		const targetTheme = theme ?? this.settings.appearanceTheme;
+		const leaves = this.app.workspace.getLeavesOfType(VIEW_TYPE_EPUB);
+		const updateTasks = leaves
+			.map((leaf) => (leaf.view instanceof EpubReaderView ? leaf.view : null))
+			.filter((view): view is EpubReaderView => view !== null)
+			.map((view) => view.updateAppearanceTheme(targetTheme));
 		await Promise.allSettled(updateTasks);
 	}
 

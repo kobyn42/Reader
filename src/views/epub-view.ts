@@ -8,7 +8,7 @@ import {
 	VIEW_TYPE_EPUB,
 } from "../constants";
 import type ReaderPlugin from "../main";
-import type { PageDisplayMode } from "../types";
+import type { PageDisplayMode, ReaderAppearanceTheme } from "../types";
 
 interface RelocatedEventPayload {
 	start?: {
@@ -24,12 +24,18 @@ interface DisplayModeRenditionConfig {
 	minSpreadWidth: number;
 }
 
+type ResolvedReaderAppearanceTheme = Exclude<ReaderAppearanceTheme, "auto">;
+
+type ContentStylesheetRules = Record<string, Record<string, string>>;
+
 const EMPTY_STATE_TEXT = "Select an EPUB file to start reading.";
 const ERROR_STATE_TEXT = "Unable to render this EPUB file.";
 const LOADING_STATE_TEXT = "Loading EPUB...";
 const MEDIA_FIT_RULE_KEY = "reader-media-fit";
+const APPEARANCE_THEME_RULE_KEY = "reader-appearance-theme";
 const AUTO_MIN_SPREAD_WIDTH = 800;
 const ALWAYS_MIN_SPREAD_WIDTH = 0;
+const READER_THEME_CLASS_NAMES = ["reader-theme-light", "reader-theme-dark", "reader-theme-sepia"];
 
 export class EpubReaderView extends FileView {
 	private plugin: ReaderPlugin;
@@ -40,6 +46,8 @@ export class EpubReaderView extends FileView {
 	private readerContainerEl: HTMLElement | null = null;
 	private tocSelectEl: HTMLSelectElement | null = null;
 	private chapterTitleEl: HTMLElement | null = null;
+	private currentAppearanceTheme: ReaderAppearanceTheme = "auto";
+	private currentResolvedAppearanceTheme: ResolvedReaderAppearanceTheme = "light";
 
 	private tocLabelByHref = new Map<string, string>();
 
@@ -86,6 +94,10 @@ export class EpubReaderView extends FileView {
 		);
 	};
 
+	private appearanceThemeHookHandler = async (contents: Contents): Promise<void> => {
+		await this.applyAppearanceThemeToContents(contents, this.currentResolvedAppearanceTheme);
+	};
+
 	constructor(leaf: WorkspaceLeaf, plugin: ReaderPlugin) {
 		super(leaf);
 		this.plugin = plugin;
@@ -109,6 +121,7 @@ export class EpubReaderView extends FileView {
 	async onOpen(): Promise<void> {
 		this.buildLayout();
 		this.renderState(EMPTY_STATE_TEXT);
+		await this.updateAppearanceTheme(this.plugin.settings.appearanceTheme);
 	}
 
 	async onClose(): Promise<void> {
@@ -196,6 +209,26 @@ export class EpubReaderView extends FileView {
 		}
 	}
 
+	async updateAppearanceTheme(theme: ReaderAppearanceTheme): Promise<void> {
+		const resolvedTheme = this.resolveAppearanceTheme(theme);
+		const shouldUpdateContents =
+			this.currentAppearanceTheme !== theme || this.currentResolvedAppearanceTheme !== resolvedTheme;
+
+		this.currentAppearanceTheme = theme;
+		this.currentResolvedAppearanceTheme = resolvedTheme;
+		this.applyReaderThemeClass(resolvedTheme);
+
+		if (!this.rendition || !shouldUpdateContents) {
+			return;
+		}
+
+		try {
+			await this.applyAppearanceThemeToRenditionContents();
+		} catch (error: unknown) {
+			console.warn("Failed to apply appearance theme", error);
+		}
+	}
+
 	private async openFileWithMode(
 		file: TFile,
 		mode: PageDisplayMode,
@@ -203,6 +236,7 @@ export class EpubReaderView extends FileView {
 	): Promise<void> {
 		this.ensureLayout();
 		await this.cleanupBook();
+		await this.updateAppearanceTheme(this.plugin.settings.appearanceTheme);
 		this.renderState(LOADING_STATE_TEXT);
 
 		try {
@@ -231,6 +265,7 @@ export class EpubReaderView extends FileView {
 			);
 			this.rendition.on("relocated", this.onRelocatedHandler);
 			this.rendition.hooks.content.register(this.mediaFitHookHandler);
+			this.rendition.hooks.content.register(this.appearanceThemeHookHandler);
 
 			void this.loadToc();
 
@@ -457,6 +492,94 @@ export class EpubReaderView extends FileView {
 		}
 	}
 
+	private resolveAppearanceTheme(theme: ReaderAppearanceTheme): ResolvedReaderAppearanceTheme {
+		if (theme !== "auto") {
+			return theme;
+		}
+		return document.body.classList.contains("theme-dark") ? "dark" : "light";
+	}
+
+	private applyReaderThemeClass(theme: ResolvedReaderAppearanceTheme): void {
+		this.contentEl.removeClasses(READER_THEME_CLASS_NAMES);
+		this.contentEl.addClass(`reader-theme-${theme}`);
+	}
+
+	private async applyAppearanceThemeToRenditionContents(): Promise<void> {
+		if (!this.rendition) {
+			return;
+		}
+		const contentsList = this.getRenditionContents(this.rendition);
+		const applyTasks = contentsList.map((contents) =>
+			this.applyAppearanceThemeToContents(contents, this.currentResolvedAppearanceTheme),
+		);
+		await Promise.allSettled(applyTasks);
+	}
+
+	private getRenditionContents(rendition: Rendition): Contents[] {
+		const contents = rendition.getContents() as unknown;
+		if (Array.isArray(contents)) {
+			return contents as Contents[];
+		}
+		if (contents) {
+			return [contents as Contents];
+		}
+		return [];
+	}
+
+	private async applyAppearanceThemeToContents(
+		contents: Contents,
+		theme: ResolvedReaderAppearanceTheme,
+	): Promise<void> {
+		await contents.addStylesheetRules(this.getAppearanceContentRules(theme), APPEARANCE_THEME_RULE_KEY);
+	}
+
+	private getAppearanceContentRules(theme: ResolvedReaderAppearanceTheme): ContentStylesheetRules {
+		if (theme === "dark") {
+			return {
+				"html, body": {
+					"background-color": "#111318 !important",
+					color: "#e8e6de !important",
+				},
+				"p, li, div, span, h1, h2, h3, h4, h5, h6": {
+					"background-color": "transparent !important",
+					color: "#e8e6de !important",
+				},
+				"a, a:link, a:hover, a:active": {
+					color: "#7cc7ff !important",
+				},
+				"a:visited": {
+					color: "#c6a6ff !important",
+				},
+				"a *, a:link *, a:hover *, a:active *": {
+					color: "#7cc7ff !important",
+				},
+				"a:visited *": {
+					color: "#c6a6ff !important",
+				},
+			};
+		}
+
+		if (theme === "sepia") {
+			return {
+				"html, body": {
+					"background-color": "#f1e7d0 !important",
+					color: "#5a4636 !important",
+				},
+				"p, li, div, span, h1, h2, h3, h4, h5, h6": {
+					"background-color": "transparent !important",
+					color: "#5a4636 !important",
+				},
+			};
+		}
+
+		return {
+			"html, body": {
+				"background-color": "transparent !important",
+				color: "inherit !important",
+			},
+		};
+	}
+
 	private getRenditionConfig(mode: PageDisplayMode): DisplayModeRenditionConfig {
 		if (mode === "spread-always") {
 			return {
@@ -545,6 +668,11 @@ export class EpubReaderView extends FileView {
 				this.rendition.hooks.content.deregister(this.mediaFitHookHandler);
 			} catch (error: unknown) {
 				console.debug("Failed to detach media fit hook handler", error);
+			}
+			try {
+				this.rendition.hooks.content.deregister(this.appearanceThemeHookHandler);
+			} catch (error: unknown) {
+				console.debug("Failed to detach appearance theme hook handler", error);
 			}
 			try {
 				this.rendition.destroy();
