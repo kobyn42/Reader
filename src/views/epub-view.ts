@@ -8,7 +8,8 @@ import {
 	VIEW_TYPE_EPUB,
 } from "../constants";
 import type ReaderPlugin from "../main";
-import type { PageDisplayMode, ReaderAppearanceTheme } from "../types";
+import type { PageDisplayMode, ReaderAppearanceTheme, ResolvedReaderAppearanceTheme } from "../types";
+import { FootnotePopoverController } from "./footnote-popover-controller";
 
 interface RelocatedEventPayload {
 	start?: {
@@ -23,8 +24,6 @@ interface DisplayModeRenditionConfig {
 	spread: "auto" | "always" | "none";
 	minSpreadWidth: number;
 }
-
-type ResolvedReaderAppearanceTheme = Exclude<ReaderAppearanceTheme, "auto">;
 
 type ContentStylesheetRules = Record<string, Record<string, string>>;
 
@@ -42,6 +41,7 @@ export class EpubReaderView extends FileView {
 	private book: Book | null = null;
 	private rendition: Rendition | null = null;
 	private keyboardBoundDocuments = new WeakSet<Document>();
+	private footnotePopoverController: FootnotePopoverController | null = null;
 
 	private toolbarEl: HTMLElement | null = null;
 	private readerContainerEl: HTMLElement | null = null;
@@ -106,6 +106,13 @@ export class EpubReaderView extends FileView {
 		}
 		targetDocument.addEventListener("keydown", this.handleArrowNavigationKeydown);
 		this.keyboardBoundDocuments.add(targetDocument);
+	};
+
+	private footnotePopoverHookHandler = async (contents: Contents): Promise<void> => {
+		if (!this.footnotePopoverController) {
+			return;
+		}
+		await this.footnotePopoverController.bindContents(contents);
 	};
 
 	constructor(leaf: WorkspaceLeaf, plugin: ReaderPlugin) {
@@ -229,6 +236,14 @@ export class EpubReaderView extends FileView {
 		this.currentResolvedAppearanceTheme = resolvedTheme;
 		this.applyReaderThemeClass(resolvedTheme);
 
+		if (this.footnotePopoverController) {
+			try {
+				await this.footnotePopoverController.updateTheme(resolvedTheme);
+			} catch (error: unknown) {
+				console.warn("Failed to update footnote popover theme", error);
+			}
+		}
+
 		if (!this.rendition || !shouldUpdateContents) {
 			return;
 		}
@@ -274,10 +289,12 @@ export class EpubReaderView extends FileView {
 				this.readerContainerEl,
 				renditionOptions as Parameters<Book["renderTo"]>[1],
 			);
+			this.footnotePopoverController = new FootnotePopoverController(this.currentResolvedAppearanceTheme);
 			this.rendition.on("relocated", this.onRelocatedHandler);
 			this.rendition.hooks.content.register(this.mediaFitHookHandler);
 			this.rendition.hooks.content.register(this.appearanceThemeHookHandler);
 			this.rendition.hooks.content.register(this.keyboardNavigationHookHandler);
+			this.rendition.hooks.content.register(this.footnotePopoverHookHandler);
 
 			void this.loadToc();
 
@@ -716,6 +733,7 @@ export class EpubReaderView extends FileView {
 	}
 
 	private async cleanupBook(): Promise<void> {
+		const footnoteController = this.footnotePopoverController;
 		if (this.rendition) {
 			try {
 				this.rendition.off("relocated", this.onRelocatedHandler);
@@ -737,12 +755,24 @@ export class EpubReaderView extends FileView {
 			} catch (error: unknown) {
 				console.debug("Failed to detach keyboard navigation hook handler", error);
 			}
+			try {
+				this.rendition.hooks.content.deregister(this.footnotePopoverHookHandler);
+			} catch (error: unknown) {
+				console.debug("Failed to detach footnote popover hook handler", error);
+			}
 			const contentsList = this.getRenditionContents(this.rendition);
 			for (const contents of contentsList) {
 				try {
 					contents.document.removeEventListener("keydown", this.handleArrowNavigationKeydown);
 				} catch (error: unknown) {
 					console.debug("Failed to detach keyboard navigation listener", error);
+				}
+				if (footnoteController) {
+					try {
+						footnoteController.unbindContents(contents);
+					} catch (error: unknown) {
+						console.debug("Failed to detach footnote popover listeners", error);
+					}
 				}
 			}
 			try {
@@ -761,6 +791,15 @@ export class EpubReaderView extends FileView {
 			}
 			this.book = null;
 		}
+
+		if (footnoteController) {
+			try {
+				footnoteController.destroy();
+			} catch (error: unknown) {
+				console.debug("Failed to destroy footnote popover controller", error);
+			}
+		}
+		this.footnotePopoverController = null;
 
 		this.tocLabelByHref.clear();
 		this.keyboardBoundDocuments = new WeakSet<Document>();
