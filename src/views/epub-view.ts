@@ -109,7 +109,7 @@ export class EpubReaderView extends FileView {
 
 	getDisplayText(): string {
 		if (this.file) {
-			return `Epub: ${this.file.basename}`;
+			return this.file.basename;
 		}
 		return "Epub reader";
 	}
