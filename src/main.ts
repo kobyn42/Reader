@@ -1,99 +1,112 @@
-import {App, Editor, MarkdownView, Modal, Notice, Plugin} from 'obsidian';
-import {DEFAULT_SETTINGS, MyPluginSettings, SampleSettingTab} from "./settings";
+import { Plugin, TAbstractFile, TFile } from "obsidian";
+import {
+	EPUB_EXTENSION,
+	VIEW_TYPE_EPUB,
+} from "./constants";
+import { registerReaderCommands } from "./commands/register-commands";
+import { DEFAULT_SETTINGS, ReaderSettingTab } from "./settings";
+import type { ReaderPluginSettings } from "./types";
+import { EpubReaderView } from "./views/epub-view";
 
-// Remember to rename these classes and interfaces!
+export default class ReaderPlugin extends Plugin {
+	settings: ReaderPluginSettings;
 
-export default class MyPlugin extends Plugin {
-	settings: MyPluginSettings;
-
-	async onload() {
+	async onload(): Promise<void> {
 		await this.loadSettings();
 
-		// This creates an icon in the left ribbon.
-		this.addRibbonIcon('dice', 'Sample', (evt: MouseEvent) => {
-			// Called when the user clicks the icon.
-			new Notice('This is a notice!');
-		});
+		this.registerView(VIEW_TYPE_EPUB, (leaf) => new EpubReaderView(leaf, this));
+		this.registerExtensions([EPUB_EXTENSION], VIEW_TYPE_EPUB);
 
-		// This adds a status bar item to the bottom of the app. Does not work on mobile apps.
-		const statusBarItemEl = this.addStatusBarItem();
-		statusBarItemEl.setText('Status bar text');
+		registerReaderCommands(this);
+		this.addSettingTab(new ReaderSettingTab(this.app, this));
 
-		// This adds a simple command that can be triggered anywhere
-		this.addCommand({
-			id: 'open-modal-simple',
-			name: 'Open modal (simple)',
-			callback: () => {
-				new SampleModal(this.app).open();
-			}
-		});
-		// This adds an editor command that can perform some operation on the current editor instance
-		this.addCommand({
-			id: 'replace-selected',
-			name: 'Replace selected content',
-			editorCallback: (editor: Editor, view: MarkdownView) => {
-				editor.replaceSelection('Sample editor command');
-			}
-		});
-		// This adds a complex command that can check whether the current state of the app allows execution of the command
-		this.addCommand({
-			id: 'open-modal-complex',
-			name: 'Open modal (complex)',
-			checkCallback: (checking: boolean) => {
-				// Conditions to check
-				const markdownView = this.app.workspace.getActiveViewOfType(MarkdownView);
-				if (markdownView) {
-					// If checking is true, we're simply "checking" if the command can be run.
-					// If checking is false, then we want to actually perform the operation.
-					if (!checking) {
-						new SampleModal(this.app).open();
-					}
+		this.registerEvent(
+			this.app.vault.on("delete", (file) => {
+				void this.handleFileDelete(file);
+			}),
+		);
 
-					// This command will only show up in Command Palette when the check function returns true
-					return true;
-				}
-				return false;
-			}
-		});
-
-		// This adds a settings tab so the user can configure various aspects of the plugin
-		this.addSettingTab(new SampleSettingTab(this.app, this));
-
-		// If the plugin hooks up any global DOM events (on parts of the app that doesn't belong to this plugin)
-		// Using this function will automatically remove the event listener when this plugin is disabled.
-		this.registerDomEvent(document, 'click', (evt: MouseEvent) => {
-			new Notice("Click");
-		});
-
-		// When registering intervals, this function will automatically clear the interval when the plugin is disabled.
-		this.registerInterval(window.setInterval(() => console.log('setInterval'), 5 * 60 * 1000));
-
+		this.registerEvent(
+			this.app.vault.on("rename", (file, oldPath) => {
+				void this.handleFileRename(file, oldPath);
+			}),
+		);
 	}
 
-	onunload() {
+	async loadSettings(): Promise<void> {
+		const loadedData = (await this.loadData()) as Partial<ReaderPluginSettings> | null;
+		this.settings = {
+			...DEFAULT_SETTINGS,
+			...loadedData,
+			lastLocations: {
+				...DEFAULT_SETTINGS.lastLocations,
+				...(loadedData?.lastLocations ?? {}),
+			},
+		};
 	}
 
-	async loadSettings() {
-		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData() as Partial<MyPluginSettings>);
-	}
-
-	async saveSettings() {
+	async saveSettings(): Promise<void> {
 		await this.saveData(this.settings);
 	}
-}
 
-class SampleModal extends Modal {
-	constructor(app: App) {
-		super(app);
+	getLastLocation(filePath: string): string | undefined {
+		return this.settings.lastLocations[filePath];
 	}
 
-	onOpen() {
-		let {contentEl} = this;
-		contentEl.setText('Woah!');
+	async setLastLocation(filePath: string, cfi: string): Promise<void> {
+		const currentLocation = this.settings.lastLocations[filePath];
+		if (currentLocation === cfi) {
+			return;
+		}
+		this.settings.lastLocations[filePath] = cfi;
+		await this.saveSettings();
 	}
 
-	onClose() {
-		const {contentEl} = this;
-		contentEl.empty();
+	async openEpubFile(file: TFile, newLeaf: boolean): Promise<void> {
+		const leaf = this.app.workspace.getLeaf(newLeaf);
+		await leaf.openFile(file, { active: true });
+		if (leaf.view.getViewType() !== VIEW_TYPE_EPUB) {
+			await leaf.setViewState({
+				type: VIEW_TYPE_EPUB,
+				state: { file: file.path },
+				active: true,
+			});
+		}
+		await this.app.workspace.revealLeaf(leaf);
+	}
+
+	private async handleFileDelete(file: TAbstractFile): Promise<void> {
+		if (!this.isEpubFile(file)) {
+			return;
+		}
+
+		if (!(file.path in this.settings.lastLocations)) {
+			return;
+		}
+
+		delete this.settings.lastLocations[file.path];
+		await this.saveSettings();
+	}
+
+	private async handleFileRename(file: TAbstractFile, oldPath: string): Promise<void> {
+		if (!(oldPath in this.settings.lastLocations)) {
+			return;
+		}
+
+		const oldLocation = this.settings.lastLocations[oldPath];
+		if (oldLocation === undefined) {
+			return;
+		}
+		delete this.settings.lastLocations[oldPath];
+
+		if (this.isEpubFile(file)) {
+			this.settings.lastLocations[file.path] = oldLocation;
+		}
+
+		await this.saveSettings();
+	}
+
+	private isEpubFile(file: TAbstractFile): file is TFile {
+		return file instanceof TFile && file.extension.toLowerCase() === EPUB_EXTENSION;
 	}
 }

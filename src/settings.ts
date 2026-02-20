@@ -1,36 +1,34 @@
-import {App, PluginSettingTab, Setting} from "obsidian";
-import MyPlugin from "./main";
+import { App, PluginSettingTab, Setting } from "obsidian";
+import type ReaderPlugin from "./main";
+import type { ReaderPluginSettings } from "./types";
 
-export interface MyPluginSettings {
-	mySetting: string;
-}
+export const DEFAULT_SETTINGS: ReaderPluginSettings = {
+	reopenAtLastPosition: true,
+	lastLocations: {},
+};
 
-export const DEFAULT_SETTINGS: MyPluginSettings = {
-	mySetting: 'default'
-}
+export class ReaderSettingTab extends PluginSettingTab {
+	private plugin: ReaderPlugin;
 
-export class SampleSettingTab extends PluginSettingTab {
-	plugin: MyPlugin;
-
-	constructor(app: App, plugin: MyPlugin) {
+	constructor(app: App, plugin: ReaderPlugin) {
 		super(app, plugin);
 		this.plugin = plugin;
 	}
 
 	display(): void {
-		const {containerEl} = this;
-
+		const { containerEl } = this;
 		containerEl.empty();
 
 		new Setting(containerEl)
-			.setName('Settings #1')
-			.setDesc('It\'s a secret')
-			.addText(text => text
-				.setPlaceholder('Enter your secret')
-				.setValue(this.plugin.settings.mySetting)
-				.onChange(async (value) => {
-					this.plugin.settings.mySetting = value;
-					await this.plugin.saveSettings();
-				}));
+			.setName("Reopen at last position")
+			.setDesc("Restore the previous reading position when reopening an epub file.")
+			.addToggle((toggle) => {
+				toggle
+					.setValue(this.plugin.settings.reopenAtLastPosition)
+					.onChange(async (value) => {
+						this.plugin.settings.reopenAtLastPosition = value;
+						await this.plugin.saveSettings();
+					});
+			});
 	}
 }

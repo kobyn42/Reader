@@ -1,0 +1,410 @@
+import ePub, { Book, NavItem, Rendition } from "epubjs";
+import { FileView, Notice, TFile, WorkspaceLeaf } from "obsidian";
+import {
+	EPUB_EXTENSION,
+	NOTICE_EPUB_NAVIGATION_FAILED,
+	NOTICE_EPUB_NOT_OPEN,
+	NOTICE_EPUB_OPEN_FAILED,
+	VIEW_TYPE_EPUB,
+} from "../constants";
+import type ReaderPlugin from "../main";
+
+interface RelocatedEventPayload {
+	start?: {
+		cfi?: string;
+		href?: string;
+	};
+}
+
+const EMPTY_STATE_TEXT = "Select an EPUB file to start reading.";
+const ERROR_STATE_TEXT = "Unable to render this EPUB file.";
+const LOADING_STATE_TEXT = "Loading EPUB...";
+
+export class EpubReaderView extends FileView {
+	private plugin: ReaderPlugin;
+	private book: Book | null = null;
+	private rendition: Rendition | null = null;
+
+	private toolbarEl: HTMLElement | null = null;
+	private readerContainerEl: HTMLElement | null = null;
+	private tocSelectEl: HTMLSelectElement | null = null;
+	private chapterTitleEl: HTMLElement | null = null;
+
+	private tocLabelByHref = new Map<string, string>();
+
+	private onRelocatedHandler = (location: RelocatedEventPayload): void => {
+		const href = location.start?.href;
+		if (href) {
+			this.updateCurrentSection(href);
+		}
+
+		const cfi = location.start?.cfi;
+		if (cfi && this.file) {
+			void this.plugin.setLastLocation(this.file.path, cfi);
+		}
+	};
+
+	constructor(leaf: WorkspaceLeaf, plugin: ReaderPlugin) {
+		super(leaf);
+		this.plugin = plugin;
+	}
+
+	getViewType(): string {
+		return VIEW_TYPE_EPUB;
+	}
+
+	getDisplayText(): string {
+		if (this.file) {
+			return `Epub: ${this.file.basename}`;
+		}
+		return "Epub reader";
+	}
+
+	canAcceptExtension(extension: string): boolean {
+		return extension.toLowerCase() === EPUB_EXTENSION;
+	}
+
+	async onOpen(): Promise<void> {
+		this.buildLayout();
+		this.renderState(EMPTY_STATE_TEXT);
+	}
+
+	async onClose(): Promise<void> {
+		await this.cleanupBook();
+		this.contentEl.empty();
+	}
+
+	async onLoadFile(file: TFile): Promise<void> {
+		this.ensureLayout();
+		await this.cleanupBook();
+		this.renderState(LOADING_STATE_TEXT);
+
+		try {
+			const buffer = await this.app.vault.readBinary(file);
+			this.book = ePub();
+			await this.withTimeout(this.book.open(buffer, "binary"), 10000, "open epub binary");
+
+			if (!this.readerContainerEl) {
+				throw new Error("Reader container is not initialized.");
+			}
+
+			this.readerContainerEl.empty();
+			const renditionOptions = {
+				width: "100%",
+				height: "100%",
+				flow: "paginated",
+				spread: "auto",
+				method: "write",
+			};
+			this.rendition = this.book.renderTo(
+				this.readerContainerEl,
+				renditionOptions as Parameters<Book["renderTo"]>[1],
+			);
+			this.rendition.on("relocated", this.onRelocatedHandler);
+
+			void this.loadToc();
+
+			const savedLocation = this.plugin.settings.reopenAtLastPosition
+				? this.plugin.getLastLocation(file.path)
+				: undefined;
+
+			await this.displayWithFallback(savedLocation);
+			void this.rendition.reportLocation().catch((error: unknown) => {
+				console.debug("Failed to report location", error);
+			});
+		} catch (error: unknown) {
+			console.error("Failed to open EPUB", error);
+			new Notice(NOTICE_EPUB_OPEN_FAILED);
+			this.renderState(ERROR_STATE_TEXT, true);
+		}
+	}
+
+	async onUnloadFile(): Promise<void> {
+		await this.cleanupBook();
+		this.renderState(EMPTY_STATE_TEXT);
+	}
+
+	async prevPage(): Promise<void> {
+		if (!this.rendition) {
+			new Notice(NOTICE_EPUB_NOT_OPEN);
+			return;
+		}
+
+		try {
+			await this.rendition.prev();
+		} catch (error: unknown) {
+			console.error("Failed to go to previous page", error);
+			new Notice(NOTICE_EPUB_NAVIGATION_FAILED);
+		}
+	}
+
+	async nextPage(): Promise<void> {
+		if (!this.rendition) {
+			new Notice(NOTICE_EPUB_NOT_OPEN);
+			return;
+		}
+
+		try {
+			await this.rendition.next();
+		} catch (error: unknown) {
+			console.error("Failed to go to next page", error);
+			new Notice(NOTICE_EPUB_NAVIGATION_FAILED);
+		}
+	}
+
+	private ensureLayout(): void {
+		if (this.readerContainerEl && this.tocSelectEl && this.chapterTitleEl) {
+			return;
+		}
+		this.buildLayout();
+	}
+
+	private buildLayout(): void {
+		this.contentEl.empty();
+		this.contentEl.addClass("reader-epub-view");
+
+		this.toolbarEl = this.contentEl.createDiv({ cls: "reader-epub-toolbar" });
+
+		const prevButton = this.toolbarEl.createEl("button", {
+			cls: "reader-epub-button",
+			text: "Prev",
+		});
+		this.registerDomEvent(prevButton, "click", () => {
+			void this.prevPage();
+		});
+
+		const nextButton = this.toolbarEl.createEl("button", {
+			cls: "reader-epub-button",
+			text: "Next",
+		});
+		this.registerDomEvent(nextButton, "click", () => {
+			void this.nextPage();
+		});
+
+		this.tocSelectEl = this.toolbarEl.createEl("select", {
+			cls: "reader-epub-toc",
+		});
+		this.registerDomEvent(this.tocSelectEl, "change", () => {
+			void this.jumpToSelectedSection();
+		});
+
+		this.chapterTitleEl = this.toolbarEl.createDiv({
+			cls: "reader-epub-chapter",
+			text: "",
+		});
+
+		this.readerContainerEl = this.contentEl.createDiv({
+			cls: "reader-epub-container",
+		});
+
+		this.populateToc([]);
+	}
+
+	private populateToc(items: NavItem[]): void {
+		if (!this.tocSelectEl) {
+			return;
+		}
+
+		this.clearSelect(this.tocSelectEl);
+		this.tocLabelByHref.clear();
+
+		const defaultOption = this.tocSelectEl.createEl("option", {
+			text: "Table of contents",
+			value: "",
+		});
+		defaultOption.selected = true;
+
+		this.addTocItems(items, 0);
+	}
+
+	private addTocItems(items: NavItem[], depth: number): void {
+		if (!this.tocSelectEl) {
+			return;
+		}
+
+		for (const item of items) {
+			const labelPrefix = depth > 0 ? `${"  ".repeat(depth)}- ` : "";
+			const option = this.tocSelectEl.createEl("option", {
+				text: `${labelPrefix}${item.label}`,
+				value: item.href,
+			});
+			option.dataset.hrefKey = this.normalizeHref(item.href);
+
+			this.tocLabelByHref.set(this.normalizeHref(item.href), item.label);
+
+			if (item.subitems && item.subitems.length > 0) {
+				this.addTocItems(item.subitems, depth + 1);
+			}
+		}
+	}
+
+	private async jumpToSelectedSection(): Promise<void> {
+		if (!this.rendition || !this.tocSelectEl) {
+			return;
+		}
+
+		const selected = this.tocSelectEl.value;
+		if (!selected) {
+			return;
+		}
+
+		try {
+			await this.rendition.display(selected);
+		} catch (error: unknown) {
+			console.error("Failed to jump by TOC", error);
+			new Notice(NOTICE_EPUB_NAVIGATION_FAILED);
+		}
+	}
+
+	private async displayWithFallback(savedLocation?: string): Promise<void> {
+		if (!this.rendition) {
+			throw new Error("Rendition is not initialized.");
+		}
+
+		if (savedLocation) {
+			try {
+				await this.withTimeout(this.rendition.display(savedLocation), 8000, "display saved location");
+				return;
+			} catch (error: unknown) {
+				console.warn("Failed to restore saved location, falling back to start", error);
+			}
+		}
+
+		await this.withTimeout(this.rendition.display(), 8000, "display start");
+	}
+
+	private async loadToc(): Promise<void> {
+		if (!this.book) {
+			this.populateToc([]);
+			return;
+		}
+
+		const targetBook = this.book;
+		try {
+			const navigation = await this.withTimeout(targetBook.loaded.navigation, 8000, "load toc");
+			if (this.book !== targetBook) {
+				return;
+			}
+			this.populateToc(navigation?.toc ?? []);
+		} catch (error: unknown) {
+			console.warn("Failed to load table of contents", error);
+			if (this.book === targetBook) {
+				this.populateToc([]);
+			}
+		}
+	}
+
+	private updateCurrentSection(href: string): void {
+		const normalizedHref = this.normalizeHref(href);
+		const title = this.tocLabelByHref.get(normalizedHref) ?? href;
+		if (this.chapterTitleEl) {
+			this.chapterTitleEl.setText(title);
+		}
+		this.selectTocByHref(normalizedHref);
+	}
+
+	private selectTocByHref(normalizedHref: string): void {
+		if (!this.tocSelectEl) {
+			return;
+		}
+
+		const options = Array.from(this.tocSelectEl.options);
+		const exact = options.find((option) => option.dataset.hrefKey === normalizedHref);
+		if (exact) {
+			exact.selected = true;
+			return;
+		}
+
+		const partial = options.find((option) => {
+			const hrefKey = option.dataset.hrefKey;
+			if (!hrefKey) {
+				return false;
+			}
+			return normalizedHref.startsWith(hrefKey) || hrefKey.startsWith(normalizedHref);
+		});
+
+		if (partial) {
+			partial.selected = true;
+		}
+	}
+
+	private renderState(message: string, isError = false): void {
+		if (!this.readerContainerEl) {
+			return;
+		}
+		this.readerContainerEl.empty();
+
+		const stateEl = this.readerContainerEl.createDiv({ cls: "reader-epub-state" });
+		if (isError) {
+			stateEl.addClass("is-error");
+		}
+		stateEl.setText(message);
+
+		if (this.chapterTitleEl) {
+			this.chapterTitleEl.setText("");
+		}
+		if (this.tocSelectEl) {
+			this.tocSelectEl.value = "";
+		}
+	}
+
+	private clearSelect(selectEl: HTMLSelectElement): void {
+		while (selectEl.firstChild) {
+			selectEl.removeChild(selectEl.firstChild);
+		}
+	}
+
+	private normalizeHref(href: string): string {
+		const hashIndex = href.indexOf("#");
+		const withoutHash = hashIndex >= 0 ? href.slice(0, hashIndex) : href;
+		try {
+			return decodeURIComponent(withoutHash).trim();
+		} catch {
+			return withoutHash.trim();
+		}
+	}
+
+	private async withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+		let timeoutId: number | undefined;
+		const timeoutPromise = new Promise<never>((_, reject) => {
+			timeoutId = window.setTimeout(() => {
+				reject(new Error(`Timeout while attempting to ${label}`));
+			}, ms);
+		});
+
+		try {
+			return await Promise.race([promise, timeoutPromise]);
+		} finally {
+			if (timeoutId !== undefined) {
+				window.clearTimeout(timeoutId);
+			}
+		}
+	}
+
+	private async cleanupBook(): Promise<void> {
+		if (this.rendition) {
+			try {
+				this.rendition.off("relocated", this.onRelocatedHandler);
+			} catch (error: unknown) {
+				console.debug("Failed to detach relocated handler", error);
+			}
+			try {
+				this.rendition.destroy();
+			} catch (error: unknown) {
+				console.debug("Failed to destroy rendition", error);
+			}
+			this.rendition = null;
+		}
+
+		if (this.book) {
+			try {
+				this.book.destroy();
+			} catch (error: unknown) {
+				console.debug("Failed to destroy book", error);
+			}
+			this.book = null;
+		}
+
+		this.tocLabelByHref.clear();
+	}
+}
