@@ -1,11 +1,10 @@
 {
-	"id": "reader",
+	"id": "obsidian-reader",
 	"name": "Reader",
-	"version": "1.0.0",
+	"version": "2026.02.20",
 	"minAppVersion": "0.15.0",
 	"description": "EPUB reader for Obsidian",
-	"author": "Obsidian",
-	"authorUrl": "https://obsidian.md",
-	"fundingUrl": "https://obsidian.md/pricing",
+	"author": "kobyn",
+	"authorUrl": "https://kobyn.net",
 	"isDesktopOnly": false
 }
