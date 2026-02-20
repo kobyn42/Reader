@@ -1,4 +1,4 @@
-import ePub, { Book, NavItem, Rendition } from "epubjs";
+import ePub, { Book, Contents, NavItem, Rendition } from "epubjs";
 import { FileView, Notice, TFile, WorkspaceLeaf } from "obsidian";
 import {
 	EPUB_EXTENSION,
@@ -19,6 +19,7 @@ interface RelocatedEventPayload {
 const EMPTY_STATE_TEXT = "Select an EPUB file to start reading.";
 const ERROR_STATE_TEXT = "Unable to render this EPUB file.";
 const LOADING_STATE_TEXT = "Loading EPUB...";
+const MEDIA_FIT_RULE_KEY = "reader-media-fit";
 
 export class EpubReaderView extends FileView {
 	private plugin: ReaderPlugin;
@@ -42,6 +43,37 @@ export class EpubReaderView extends FileView {
 		if (cfi && this.file) {
 			void this.plugin.setLastLocation(this.file.path, cfi);
 		}
+	};
+
+	private mediaFitHookHandler = async (contents: Contents): Promise<void> => {
+		if (this.isPrePaginatedLayout()) {
+			return;
+		}
+
+		await contents.addStylesheetRules(
+			{
+				img: {
+					"max-width": "100% !important",
+					"max-height": "100% !important",
+					width: "auto !important",
+					height: "auto !important",
+					"object-fit": "contain !important",
+					"box-sizing": "border-box !important",
+					"page-break-inside": "avoid !important",
+					"break-inside": "avoid !important",
+				},
+				svg: {
+					"max-width": "100% !important",
+					"max-height": "100% !important",
+					width: "auto !important",
+					height: "auto !important",
+					"box-sizing": "border-box !important",
+					"page-break-inside": "avoid !important",
+					"break-inside": "avoid !important",
+				},
+			},
+			MEDIA_FIT_RULE_KEY,
+		);
 	};
 
 	constructor(leaf: WorkspaceLeaf, plugin: ReaderPlugin) {
@@ -101,6 +133,7 @@ export class EpubReaderView extends FileView {
 				renditionOptions as Parameters<Book["renderTo"]>[1],
 			);
 			this.rendition.on("relocated", this.onRelocatedHandler);
+			this.rendition.hooks.content.register(this.mediaFitHookHandler);
 
 			void this.loadToc();
 
@@ -364,6 +397,10 @@ export class EpubReaderView extends FileView {
 		}
 	}
 
+	private isPrePaginatedLayout(): boolean {
+		return this.book?.packaging?.metadata?.layout === "pre-paginated";
+	}
+
 	private async withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
 		let timeoutId: number | undefined;
 		const timeoutPromise = new Promise<never>((_, reject) => {
@@ -387,6 +424,11 @@ export class EpubReaderView extends FileView {
 				this.rendition.off("relocated", this.onRelocatedHandler);
 			} catch (error: unknown) {
 				console.debug("Failed to detach relocated handler", error);
+			}
+			try {
+				this.rendition.hooks.content.deregister(this.mediaFitHookHandler);
+			} catch (error: unknown) {
+				console.debug("Failed to detach media fit hook handler", error);
 			}
 			try {
 				this.rendition.destroy();
