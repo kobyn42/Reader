@@ -36,7 +36,7 @@ export function registerReaderCommands(plugin: ReaderPlugin): void {
 
 	plugin.addCommand({
 		id: COMMAND_EPUB_PREV_PAGE,
-		name: "Epub: previous page",
+		name: "Previous page",
 		checkCallback: (checking) => {
 			const view = plugin.app.workspace.getActiveViewOfType(EpubReaderView);
 			if (!view) {
@@ -52,7 +52,7 @@ export function registerReaderCommands(plugin: ReaderPlugin): void {
 
 	plugin.addCommand({
 		id: COMMAND_EPUB_NEXT_PAGE,
-		name: "Epub: next page",
+		name: "Next page",
 		checkCallback: (checking) => {
 			const view = plugin.app.workspace.getActiveViewOfType(EpubReaderView);
 			if (!view) {
