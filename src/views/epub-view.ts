@@ -25,6 +25,16 @@ interface DisplayModeRenditionConfig {
 	minSpreadWidth: number;
 }
 
+interface SpineSectionLike {
+	linear?: boolean;
+	next?: () => SpineSectionLike | undefined;
+	prev?: () => SpineSectionLike | undefined;
+}
+
+interface SpineLike {
+	spineItems?: SpineSectionLike[];
+}
+
 const EMPTY_STATE_TEXT = "Select an EPUB file to start reading.";
 const ERROR_STATE_TEXT = "Unable to render this EPUB file.";
 const LOADING_STATE_TEXT = "Loading EPUB...";
@@ -300,6 +310,9 @@ export class EpubReaderView extends FileView {
 			const buffer = await this.app.vault.readBinary(file);
 			this.book = ePub();
 			await this.withTimeout(this.book.open(buffer, "binary"), 10000, "open epub binary");
+			if (mode === "scroll-continuous") {
+				this.patchNonLinearSpineNavigationForContinuousMode();
+			}
 
 			if (!this.readerContainerEl) {
 				throw new Error("Reader container is not initialized.");
@@ -725,6 +738,48 @@ ${MONOSPACE_WRAP_CSS}`;
 
 	private isContinuousFlow(flow: string | undefined): boolean {
 		return flow === "scrolled" || flow === "scrolled-doc" || flow === "scrolled-continuous";
+	}
+
+	private patchNonLinearSpineNavigationForContinuousMode(): void {
+		if (!this.book) {
+			return;
+		}
+
+		const spine = this.book.spine as unknown as SpineLike;
+		const sections = spine.spineItems;
+		if (!Array.isArray(sections) || sections.length === 0) {
+			return;
+		}
+
+		const findNextLinearSection = (startIndex: number): SpineSectionLike | undefined => {
+			for (let nextIndex = startIndex + 1; nextIndex < sections.length; nextIndex += 1) {
+				const candidate = sections[nextIndex];
+				if (candidate?.linear === true) {
+					return candidate;
+				}
+			}
+			return undefined;
+		};
+
+		const findPrevLinearSection = (startIndex: number): SpineSectionLike | undefined => {
+			for (let prevIndex = startIndex - 1; prevIndex >= 0; prevIndex -= 1) {
+				const candidate = sections[prevIndex];
+				if (candidate?.linear === true) {
+					return candidate;
+				}
+			}
+			return undefined;
+		};
+
+		for (let sectionIndex = 0; sectionIndex < sections.length; sectionIndex += 1) {
+			const section = sections[sectionIndex];
+			if (!section || section.linear !== false) {
+				continue;
+			}
+
+			section.next = () => findNextLinearSection(sectionIndex);
+			section.prev = () => findPrevLinearSection(sectionIndex);
+		}
 	}
 
 	private applyScrollAnchoringWorkaroundToStageContainer(): void {
