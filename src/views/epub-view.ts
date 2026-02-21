@@ -25,8 +25,6 @@ interface DisplayModeRenditionConfig {
 	minSpreadWidth: number;
 }
 
-type ContentStylesheetRules = Record<string, Record<string, string>>;
-
 const EMPTY_STATE_TEXT = "Select an EPUB file to start reading.";
 const ERROR_STATE_TEXT = "Unable to render this EPUB file.";
 const LOADING_STATE_TEXT = "Loading EPUB...";
@@ -605,54 +603,54 @@ export class EpubReaderView extends FileView {
 		contents: Contents,
 		theme: ResolvedReaderAppearanceTheme,
 	): Promise<void> {
-		await contents.addStylesheetRules(this.getAppearanceContentRules(theme), APPEARANCE_THEME_RULE_KEY);
+		await contents.addStylesheetCss(this.getAppearanceContentCss(theme), APPEARANCE_THEME_RULE_KEY);
 	}
 
-	private getAppearanceContentRules(theme: ResolvedReaderAppearanceTheme): ContentStylesheetRules {
+	private getAppearanceContentCss(theme: ResolvedReaderAppearanceTheme): string {
 		if (theme === "dark") {
-			return {
-				"html, body": {
-					"background-color": "#111318 !important",
-					color: "#e8e6de !important",
-				},
-				"p, li, div, span, h1, h2, h3, h4, h5, h6": {
-					"background-color": "transparent !important",
-					color: "#e8e6de !important",
-				},
-				"a, a:link, a:hover, a:active": {
-					color: "#7cc7ff !important",
-				},
-				"a:visited": {
-					color: "#c6a6ff !important",
-				},
-				"a *, a:link *, a:hover *, a:active *": {
-					color: "#7cc7ff !important",
-				},
-				"a:visited *": {
-					color: "#c6a6ff !important",
-				},
-			};
+			return `
+html, body {
+	background-color: #111318 !important;
+	color: #e8e6de !important;
+}
+p, li, div, span, h1, h2, h3, h4, h5, h6 {
+	background-color: transparent !important;
+	color: #e8e6de !important;
+}
+a, a:link, a:hover, a:active {
+	color: #7cc7ff !important;
+}
+a:visited {
+	color: #c6a6ff !important;
+}
+a *, a:link *, a:hover *, a:active * {
+	color: #7cc7ff !important;
+}
+a:visited * {
+	color: #c6a6ff !important;
+}
+`;
 		}
 
 		if (theme === "sepia") {
-			return {
-				"html, body": {
-					"background-color": "#f1e7d0 !important",
-					color: "#5a4636 !important",
-				},
-				"p, li, div, span, h1, h2, h3, h4, h5, h6": {
-					"background-color": "transparent !important",
-					color: "#5a4636 !important",
-				},
-			};
+			return `
+html, body {
+	background-color: #f1e7d0 !important;
+	color: #5a4636 !important;
+}
+p, li, div, span, h1, h2, h3, h4, h5, h6 {
+	background-color: transparent !important;
+	color: #5a4636 !important;
+}
+`;
 		}
 
-		return {
-			"html, body": {
-				"background-color": "transparent !important",
-				color: "inherit !important",
-			},
-		};
+		return `
+html, body {
+	background-color: transparent !important;
+	color: inherit !important;
+}
+`;
 	}
 
 	private getRenditionConfig(mode: PageDisplayMode): DisplayModeRenditionConfig {

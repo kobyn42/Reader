@@ -10,6 +10,7 @@ import { EpubReaderView } from "./views/epub-view";
 
 export default class ReaderPlugin extends Plugin {
 	settings: ReaderPluginSettings;
+	private isAutoAppearanceThemeSyncQueued = false;
 
 	async onload(): Promise<void> {
 		await this.loadSettings();
@@ -34,12 +35,18 @@ export default class ReaderPlugin extends Plugin {
 
 		this.registerEvent(
 			this.app.workspace.on("css-change", () => {
-				if (this.settings.appearanceTheme !== "auto") {
-					return;
-				}
-				void this.applyAppearanceThemeToOpenViews("auto");
+				this.queueAutoAppearanceThemeSync();
 			}),
 		);
+
+		const darkSchemeMediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
+		const onSystemColorSchemeChange = (): void => {
+			this.queueAutoAppearanceThemeSync();
+		};
+		darkSchemeMediaQuery.addEventListener("change", onSystemColorSchemeChange);
+		this.register(() => {
+			darkSchemeMediaQuery.removeEventListener("change", onSystemColorSchemeChange);
+		});
 	}
 
 	async loadSettings(): Promise<void> {
@@ -102,6 +109,21 @@ export default class ReaderPlugin extends Plugin {
 			.filter((view): view is EpubReaderView => view !== null)
 			.map((view) => view.updateAppearanceTheme(targetTheme));
 		await Promise.allSettled(updateTasks);
+	}
+
+	private queueAutoAppearanceThemeSync(): void {
+		if (this.settings.appearanceTheme !== "auto" || this.isAutoAppearanceThemeSyncQueued) {
+			return;
+		}
+
+		this.isAutoAppearanceThemeSyncQueued = true;
+		window.requestAnimationFrame(() => {
+			this.isAutoAppearanceThemeSyncQueued = false;
+			if (this.settings.appearanceTheme !== "auto") {
+				return;
+			}
+			void this.applyAppearanceThemeToOpenViews("auto");
+		});
 	}
 
 	private async handleFileDelete(file: TAbstractFile): Promise<void> {
