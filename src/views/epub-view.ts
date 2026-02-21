@@ -33,6 +33,19 @@ const APPEARANCE_THEME_RULE_KEY = "reader-appearance-theme";
 const AUTO_MIN_SPREAD_WIDTH = 800;
 const ALWAYS_MIN_SPREAD_WIDTH = 0;
 const READER_THEME_CLASS_NAMES = ["reader-theme-light", "reader-theme-dark", "reader-theme-sepia"];
+const MONOSPACE_WRAP_CSS = `
+pre, pre code {
+	white-space: pre-wrap !important;
+	overflow-wrap: anywhere !important;
+	word-break: break-word !important;
+	max-width: 100% !important;
+	box-sizing: border-box !important;
+}
+code, kbd, samp, tt {
+	overflow-wrap: anywhere !important;
+	word-break: break-word !important;
+}
+`;
 
 export class EpubReaderView extends FileView {
 	private plugin: ReaderPlugin;
@@ -629,7 +642,7 @@ a *, a:link *, a:hover *, a:active * {
 a:visited * {
 	color: #c6a6ff !important;
 }
-`;
+${MONOSPACE_WRAP_CSS}`;
 		}
 
 		if (theme === "sepia") {
@@ -642,7 +655,7 @@ p, li, div, span, h1, h2, h3, h4, h5, h6 {
 	background-color: transparent !important;
 	color: #5a4636 !important;
 }
-`;
+${MONOSPACE_WRAP_CSS}`;
 		}
 
 		return `
@@ -650,7 +663,7 @@ html, body {
 	background-color: transparent !important;
 	color: inherit !important;
 }
-`;
+${MONOSPACE_WRAP_CSS}`;
 	}
 
 	private getRenditionConfig(mode: PageDisplayMode): DisplayModeRenditionConfig {
