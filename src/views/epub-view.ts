@@ -30,6 +30,7 @@ const ERROR_STATE_TEXT = "Unable to render this EPUB file.";
 const LOADING_STATE_TEXT = "Loading EPUB...";
 const MEDIA_FIT_RULE_KEY = "reader-media-fit";
 const APPEARANCE_THEME_RULE_KEY = "reader-appearance-theme";
+const SCROLL_ANCHORING_RULE_PROPERTY = "overflow-anchor";
 const AUTO_MIN_SPREAD_WIDTH = 800;
 const ALWAYS_MIN_SPREAD_WIDTH = 0;
 const READER_THEME_CLASS_NAMES = ["reader-theme-light", "reader-theme-dark", "reader-theme-sepia"];
@@ -64,6 +65,8 @@ export class EpubReaderView extends FileView {
 	private tocLabelByHref = new Map<string, string>();
 
 	private onRelocatedHandler = (location: RelocatedEventPayload): void => {
+		this.applyScrollAnchoringWorkaroundToStageContainer();
+
 		const href = location.start?.href;
 		if (href) {
 			this.updateCurrentSection(href);
@@ -124,6 +127,23 @@ export class EpubReaderView extends FileView {
 			return;
 		}
 		await this.footnotePopoverController.bindContents(contents);
+	};
+
+	private scrollAnchoringWorkaroundHookHandler = async (contents: Contents): Promise<void> => {
+		const targetDocument = contents.document;
+		targetDocument.documentElement.style.setProperty(SCROLL_ANCHORING_RULE_PROPERTY, "none", "important");
+		targetDocument.body.style.setProperty(SCROLL_ANCHORING_RULE_PROPERTY, "none", "important");
+		const embeddedContainers = Array.from(targetDocument.querySelectorAll<HTMLElement>(".epub-container"));
+		for (const element of embeddedContainers) {
+			element.style.setProperty(SCROLL_ANCHORING_RULE_PROPERTY, "none", "important");
+		}
+		if (targetDocument.scrollingElement instanceof HTMLElement) {
+			targetDocument.scrollingElement.style.setProperty(
+				SCROLL_ANCHORING_RULE_PROPERTY,
+				"none",
+				"important",
+			);
+		}
 	};
 
 	constructor(leaf: WorkspaceLeaf, plugin: ReaderPlugin) {
@@ -306,10 +326,13 @@ export class EpubReaderView extends FileView {
 			this.rendition.hooks.content.register(this.appearanceThemeHookHandler);
 			this.rendition.hooks.content.register(this.keyboardNavigationHookHandler);
 			this.rendition.hooks.content.register(this.footnotePopoverHookHandler);
+			this.rendition.hooks.content.register(this.scrollAnchoringWorkaroundHookHandler);
+			this.applyScrollAnchoringWorkaroundToStageContainer();
 
 			void this.loadToc();
 
 			await this.displayWithFallback(preferredLocation);
+			this.applyScrollAnchoringWorkaroundToStageContainer();
 			void this.rendition.reportLocation().catch((error: unknown) => {
 				console.debug("Failed to report location", error);
 			});
@@ -704,6 +727,32 @@ ${MONOSPACE_WRAP_CSS}`;
 		return flow === "scrolled" || flow === "scrolled-doc" || flow === "scrolled-continuous";
 	}
 
+	private applyScrollAnchoringWorkaroundToStageContainer(): void {
+		const container = this.getRenditionManagerContainer();
+		if (!container) {
+			return;
+		}
+
+		container.style.setProperty(SCROLL_ANCHORING_RULE_PROPERTY, "none", "important");
+	}
+
+	private removeScrollAnchoringWorkaroundFromStageContainer(): void {
+		const container = this.getRenditionManagerContainer();
+		if (!container) {
+			return;
+		}
+
+		container.style.removeProperty(SCROLL_ANCHORING_RULE_PROPERTY);
+	}
+
+	private getRenditionManagerContainer(): HTMLElement | null {
+		const renditionLike = this.rendition as unknown as {
+			manager?: { container?: unknown };
+		} | null;
+		const container = renditionLike?.manager?.container;
+		return container instanceof HTMLElement ? container : null;
+	}
+
 	private extractCurrentCfi(location: unknown): string | undefined {
 		if (!location || typeof location !== "object") {
 			return undefined;
@@ -771,6 +820,11 @@ ${MONOSPACE_WRAP_CSS}`;
 			} catch (error: unknown) {
 				console.debug("Failed to detach footnote popover hook handler", error);
 			}
+			try {
+				this.rendition.hooks.content.deregister(this.scrollAnchoringWorkaroundHookHandler);
+			} catch (error: unknown) {
+				console.debug("Failed to detach scroll anchoring workaround hook handler", error);
+			}
 			const contentsList = this.getRenditionContents(this.rendition);
 			for (const contents of contentsList) {
 				try {
@@ -786,6 +840,7 @@ ${MONOSPACE_WRAP_CSS}`;
 					}
 				}
 			}
+			this.removeScrollAnchoringWorkaroundFromStageContainer();
 			try {
 				this.rendition.destroy();
 			} catch (error: unknown) {

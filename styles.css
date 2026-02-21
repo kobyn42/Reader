@@ -17,6 +17,7 @@
 	box-sizing: border-box;
 	background: var(--reader-surface-bg);
 	color: var(--reader-text);
+	overflow-anchor: none;
 }
 
 .reader-epub-view.reader-theme-light {
@@ -106,6 +107,13 @@
 	border-radius: 10px;
 	overflow: hidden;
 	background: var(--reader-container-bg);
+	overflow-anchor: none;
+}
+
+.reader-epub-container .epub-container,
+.reader-epub-container .epub-view,
+.reader-epub-container .epub-view > iframe {
+	overflow-anchor: none !important;
 }
 
 .reader-epub-state {
