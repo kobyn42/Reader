@@ -1,7 +1,7 @@
 {
 	"id": "obsidian-reader",
 	"name": "Reader",
-	"version": "2026.02.23",
+	"version": "2026.02.23-2",
 	"minAppVersion": "0.15.0",
 	"description": "EPUB reader for Obsidian",
 	"author": "kobyn",
