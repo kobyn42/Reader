@@ -170,18 +170,22 @@ export class EpubReaderView extends FileView {
 
 	private scrollAnchoringWorkaroundHookHandler = async (contents: Contents): Promise<void> => {
 		const targetDocument = contents.document;
-		targetDocument.documentElement.style.setProperty(SCROLL_ANCHORING_RULE_PROPERTY, "none", "important");
-		targetDocument.body.style.setProperty(SCROLL_ANCHORING_RULE_PROPERTY, "none", "important");
+		this.setCssProps(targetDocument.documentElement, {
+			[SCROLL_ANCHORING_RULE_PROPERTY]: "none !important",
+		});
+		this.setCssProps(targetDocument.body, {
+			[SCROLL_ANCHORING_RULE_PROPERTY]: "none !important",
+		});
 		const embeddedContainers = Array.from(targetDocument.querySelectorAll<HTMLElement>(".epub-container"));
 		for (const element of embeddedContainers) {
-			element.style.setProperty(SCROLL_ANCHORING_RULE_PROPERTY, "none", "important");
+			this.setCssProps(element, {
+				[SCROLL_ANCHORING_RULE_PROPERTY]: "none !important",
+			});
 		}
 		if (targetDocument.scrollingElement instanceof HTMLElement) {
-			targetDocument.scrollingElement.style.setProperty(
-				SCROLL_ANCHORING_RULE_PROPERTY,
-				"none",
-				"important",
-			);
+			this.setCssProps(targetDocument.scrollingElement, {
+				[SCROLL_ANCHORING_RULE_PROPERTY]: "none !important",
+			});
 		}
 	};
 
@@ -995,7 +999,9 @@ ${MONOSPACE_WRAP_CSS}`;
 			return;
 		}
 
-		container.style.setProperty(SCROLL_ANCHORING_RULE_PROPERTY, "none", "important");
+		this.setCssProps(container, {
+			[SCROLL_ANCHORING_RULE_PROPERTY]: "none !important",
+		});
 	}
 
 	private removeScrollAnchoringWorkaroundFromStageContainer(): void {
@@ -1013,6 +1019,19 @@ ${MONOSPACE_WRAP_CSS}`;
 		} | null;
 		const container = renditionLike?.manager?.container;
 		return container instanceof HTMLElement ? container : null;
+	}
+
+	private setCssProps(element: HTMLElement, props: Record<string, string>): void {
+		const maybeSetCssProps = (element as HTMLElement & { setCssProps?: (nextProps: Record<string, string>) => void })
+			.setCssProps;
+		if (typeof maybeSetCssProps === "function") {
+			maybeSetCssProps.call(element, props);
+			return;
+		}
+
+		for (const [key, value] of Object.entries(props)) {
+			element.style.setProperty(key, value);
+		}
 	}
 
 	private extractCurrentCfi(location: unknown): string | undefined {

@@ -70,10 +70,6 @@ export default class ReaderPlugin extends Plugin {
 		});
 	}
 
-	async onunload(): Promise<void> {
-		this.app.workspace.detachLeavesOfType(VIEW_TYPE_EPUB_TOOLBAR);
-	}
-
 	async loadSettings(): Promise<void> {
 		const loadedData = (await this.loadData()) as Partial<ReaderPluginSettings> | null;
 		this.settings = {
