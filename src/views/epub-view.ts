@@ -21,6 +21,7 @@ interface RelocatedEventPayload {
 	start?: {
 		cfi?: string;
 		href?: string;
+		index?: number;
 	};
 }
 
@@ -39,6 +40,16 @@ interface SpineSectionLike {
 
 interface SpineLike {
 	spineItems?: SpineSectionLike[];
+}
+
+type PrefetchRequestMethod = (...args: unknown[]) => Promise<unknown>;
+
+interface PrefetchSectionLike {
+	index?: number;
+	href?: string;
+	next?: () => PrefetchSectionLike | undefined;
+	prev?: () => PrefetchSectionLike | undefined;
+	load?: (request?: PrefetchRequestMethod) => Promise<unknown>;
 }
 
 const EMPTY_STATE_TEXT = "Select an EPUB file to start reading.";
@@ -85,6 +96,10 @@ export class EpubReaderView extends FileView {
 	private toolbarChapterTitle = "";
 	private toolbarSelectedHrefKey: string | null = null;
 	private toolbarStateListeners = new Set<(state: ReaderToolbarState) => void>();
+	private prefetchedSectionIndexes = new Set<number>();
+	private prefetchInFlightIndexes = new Set<number>();
+	private lastPrefetchAnchorIndex: number | null = null;
+	private prefetchSessionId = 0;
 
 	private onRelocatedHandler = (location: RelocatedEventPayload): void => {
 		this.applyScrollAnchoringWorkaroundToStageContainer();
@@ -98,6 +113,8 @@ export class EpubReaderView extends FileView {
 		if (cfi && this.file) {
 			void this.plugin.setLastLocation(this.file.path, cfi);
 		}
+
+		this.prefetchAdjacentSections(location);
 	};
 
 	private mediaFitHookHandler = async (contents: Contents): Promise<void> => {
@@ -608,6 +625,104 @@ export class EpubReaderView extends FileView {
 		this.notifyToolbarStateChange();
 	}
 
+	private prefetchAdjacentSections(location: RelocatedEventPayload): void {
+		if (!this.book || !this.rendition) {
+			return;
+		}
+		if (this.plugin.settings.pageDisplayMode !== "scroll-continuous") {
+			return;
+		}
+
+		const currentSection = this.resolveCurrentSectionForPrefetch(location);
+		if (!currentSection) {
+			return;
+		}
+
+		const anchorIndex = this.resolvePrefetchAnchorIndex(currentSection, location);
+		if (anchorIndex === undefined || this.lastPrefetchAnchorIndex === anchorIndex) {
+			return;
+		}
+		this.lastPrefetchAnchorIndex = anchorIndex;
+
+		const prevSection = currentSection.prev?.();
+		if (prevSection) {
+			this.queueSectionPrefetch(prevSection);
+		}
+
+		const nextSection = currentSection.next?.();
+		if (nextSection) {
+			this.queueSectionPrefetch(nextSection);
+		}
+	}
+
+	private resolveCurrentSectionForPrefetch(location: RelocatedEventPayload): PrefetchSectionLike | null {
+		if (!this.book) {
+			return null;
+		}
+
+		const sectionIndex = location.start?.index;
+		if (typeof sectionIndex === "number") {
+			return (this.book.spine.get(sectionIndex) as unknown as PrefetchSectionLike | null) ?? null;
+		}
+
+		const sectionHref = location.start?.href;
+		if (!sectionHref) {
+			return null;
+		}
+		return (this.book.spine.get(sectionHref) as unknown as PrefetchSectionLike | null) ?? null;
+	}
+
+	private resolvePrefetchAnchorIndex(
+		section: PrefetchSectionLike,
+		location: RelocatedEventPayload,
+	): number | undefined {
+		if (typeof section.index === "number") {
+			return section.index;
+		}
+		if (typeof location.start?.index === "number") {
+			return location.start.index;
+		}
+		return undefined;
+	}
+
+	private queueSectionPrefetch(section: PrefetchSectionLike): void {
+		if (!this.book || typeof section.index !== "number") {
+			return;
+		}
+		if (typeof section.load !== "function") {
+			return;
+		}
+
+		const sectionIndex = section.index;
+		if (this.prefetchedSectionIndexes.has(sectionIndex) || this.prefetchInFlightIndexes.has(sectionIndex)) {
+			return;
+		}
+
+		const activeSessionId = this.prefetchSessionId;
+		const requestMethod = this.book.request as PrefetchRequestMethod;
+		this.prefetchInFlightIndexes.add(sectionIndex);
+
+		void Promise.resolve(section.load(requestMethod))
+			.then(() => {
+				if (activeSessionId !== this.prefetchSessionId) {
+					return;
+				}
+				this.prefetchedSectionIndexes.add(sectionIndex);
+			})
+			.catch((error: unknown) => {
+				if (activeSessionId !== this.prefetchSessionId) {
+					return;
+				}
+				console.debug("Failed to prefetch adjacent section", error);
+			})
+			.finally(() => {
+				if (activeSessionId !== this.prefetchSessionId) {
+					return;
+				}
+				this.prefetchInFlightIndexes.delete(sectionIndex);
+			});
+	}
+
 	private findBestMatchingHrefKey(normalizedHref: string): string | null {
 		const exact = this.toolbarTocItems.find((item) => item.hrefKey === normalizedHref);
 		if (exact) {
@@ -940,6 +1055,11 @@ ${MONOSPACE_WRAP_CSS}`;
 	}
 
 	private async cleanupBook(): Promise<void> {
+		this.prefetchSessionId += 1;
+		this.prefetchedSectionIndexes.clear();
+		this.prefetchInFlightIndexes.clear();
+		this.lastPrefetchAnchorIndex = null;
+
 		const footnoteController = this.footnotePopoverController;
 		if (this.rendition) {
 			try {
