@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
     release:
-        if: github.actor != 'github-actions[bot]'
+        if: github.actor != 'GitHub Actions [bot]'
         runs-on: ubuntu-latest
 
         steps:
@@ -47,7 +47,7 @@ jobs:
                   VERSION: ${{ steps.next_version.outputs.version }}
               run: |
                   git config --global user.email "action@github.com"
-                  git config --global user.name "GitHub Actions [bot]"github.com"
+                  git config --global user.name "GitHub Actions [bot]"
                   git add manifest.json versions.json
                   git commit -m "chore(release): ${VERSION}"
                   git tag "${VERSION}"
