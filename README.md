@@ -7,7 +7,8 @@ Reader is an Obsidian plugin for reading EPUB files inside your vault.
 - Open `.epub` files in a dedicated reader view
 - Search and open EPUB files from the command palette
 - Navigate with:
-  - Toolbar buttons: `Prev` / `Next`
+  - Desktop right sidebar toolbar: `Prev` / `Next`, TOC, chapter title
+  - Mobile top toolbar: `Prev` / `Next`, TOC, chapter title (toggle with `Show controls`)
   - Keyboard: `Left Arrow` / `Right Arrow`
   - Commands: `Previous page` / `Next page`
 - Jump by table of contents (TOC)
@@ -32,8 +33,9 @@ Reader is an Obsidian plugin for reading EPUB files inside your vault.
 1. Open the command palette.
 2. Run `Open epub file`.
 3. Select a book from the list.
-4. Read with toolbar buttons, arrow keys, or commands.
-5. Use the TOC dropdown to jump between sections.
+4. On desktop, use the right sidebar toolbar. On mobile, use the top toolbar.
+5. You can also use arrow keys or commands for page navigation.
+6. Use the TOC dropdown to jump between sections.
 
 ## Settings
 

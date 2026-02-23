@@ -1,5 +1,5 @@
 import ePub, { Book, Contents, NavItem, Rendition } from "epubjs";
-import { FileView, Notice, TFile, WorkspaceLeaf } from "obsidian";
+import { FileView, Notice, Platform, TFile, WorkspaceLeaf } from "obsidian";
 import {
 	EPUB_EXTENSION,
 	NOTICE_EPUB_NAVIGATION_FAILED,
@@ -8,7 +8,13 @@ import {
 	VIEW_TYPE_EPUB,
 } from "../constants";
 import type ReaderPlugin from "../main";
-import type { PageDisplayMode, ReaderAppearanceTheme, ResolvedReaderAppearanceTheme } from "../types";
+import type {
+	PageDisplayMode,
+	ReaderAppearanceTheme,
+	ReaderToolbarState,
+	ReaderToolbarTocItem,
+	ResolvedReaderAppearanceTheme,
+} from "../types";
 import { FootnotePopoverController } from "./footnote-popover-controller";
 
 interface RelocatedEventPayload {
@@ -66,13 +72,19 @@ export class EpubReaderView extends FileView {
 	private footnotePopoverController: FootnotePopoverController | null = null;
 
 	private toolbarEl: HTMLElement | null = null;
+	private mobileToolbarToggleButtonEl: HTMLButtonElement | null = null;
 	private readerContainerEl: HTMLElement | null = null;
 	private tocSelectEl: HTMLSelectElement | null = null;
 	private chapterTitleEl: HTMLElement | null = null;
+	private isMobileToolbarCollapsed = true;
 	private currentAppearanceTheme: ReaderAppearanceTheme = "auto";
 	private currentResolvedAppearanceTheme: ResolvedReaderAppearanceTheme = "light";
 
 	private tocLabelByHref = new Map<string, string>();
+	private toolbarTocItems: ReaderToolbarTocItem[] = [];
+	private toolbarChapterTitle = "";
+	private toolbarSelectedHrefKey: string | null = null;
+	private toolbarStateListeners = new Set<(state: ReaderToolbarState) => void>();
 
 	private onRelocatedHandler = (location: RelocatedEventPayload): void => {
 		this.applyScrollAnchoringWorkaroundToStageContainer();
@@ -185,6 +197,7 @@ export class EpubReaderView extends FileView {
 
 	async onClose(): Promise<void> {
 		await this.cleanupBook();
+		this.toolbarStateListeners.clear();
 		this.contentEl.empty();
 	}
 
@@ -224,6 +237,37 @@ export class EpubReaderView extends FileView {
 			await this.rendition.next();
 		} catch (error: unknown) {
 			console.error("Failed to go to next page", error);
+			new Notice(NOTICE_EPUB_NAVIGATION_FAILED);
+		}
+	}
+
+	getToolbarState(): ReaderToolbarState {
+		return {
+			canNavigate: this.rendition !== null,
+			chapterTitle: this.toolbarChapterTitle,
+			selectedHrefKey: this.toolbarSelectedHrefKey,
+			tocItems: this.toolbarTocItems.map((item) => ({ ...item })),
+		};
+	}
+
+	onToolbarStateChange(listener: (state: ReaderToolbarState) => void): () => void {
+		this.toolbarStateListeners.add(listener);
+		listener(this.getToolbarState());
+
+		return () => {
+			this.toolbarStateListeners.delete(listener);
+		};
+	}
+
+	async jumpToSection(href: string): Promise<void> {
+		if (!this.rendition || !href) {
+			return;
+		}
+
+		try {
+			await this.rendition.display(href);
+		} catch (error: unknown) {
+			console.error("Failed to jump by TOC", error);
 			new Notice(NOTICE_EPUB_NAVIGATION_FAILED);
 		}
 	}
@@ -357,7 +401,7 @@ export class EpubReaderView extends FileView {
 	}
 
 	private ensureLayout(): void {
-		if (this.readerContainerEl && this.tocSelectEl && this.chapterTitleEl) {
+		if (this.readerContainerEl) {
 			return;
 		}
 		this.buildLayout();
@@ -366,84 +410,97 @@ export class EpubReaderView extends FileView {
 	private buildLayout(): void {
 		this.contentEl.empty();
 		this.contentEl.addClass("reader-epub-view");
+		const shouldShowTopToolbar = Platform.isMobile;
+		if (shouldShowTopToolbar) {
+			this.mobileToolbarToggleButtonEl = this.contentEl.createEl("button", {
+				cls: "reader-mobile-toolbar-toggle",
+				text: "",
+			});
+			this.registerDomEvent(this.mobileToolbarToggleButtonEl, "click", () => {
+				this.isMobileToolbarCollapsed = !this.isMobileToolbarCollapsed;
+				this.updateMobileToolbarCollapsedState();
+			});
 
-		this.toolbarEl = this.contentEl.createDiv({ cls: "reader-epub-toolbar" });
+			this.toolbarEl = this.contentEl.createDiv({ cls: "reader-epub-toolbar" });
 
-		const prevButton = this.toolbarEl.createEl("button", {
-			cls: "reader-epub-button",
-			text: "Prev",
-		});
-		this.registerDomEvent(prevButton, "click", () => {
-			void this.prevPage();
-		});
+			const prevButton = this.toolbarEl.createEl("button", {
+				cls: "reader-epub-button",
+				text: "Prev",
+			});
+			this.registerDomEvent(prevButton, "click", () => {
+				void this.prevPage();
+			});
 
-		const nextButton = this.toolbarEl.createEl("button", {
-			cls: "reader-epub-button",
-			text: "Next",
-		});
-		this.registerDomEvent(nextButton, "click", () => {
-			void this.nextPage();
-		});
+			const nextButton = this.toolbarEl.createEl("button", {
+				cls: "reader-epub-button",
+				text: "Next",
+			});
+			this.registerDomEvent(nextButton, "click", () => {
+				void this.nextPage();
+			});
 
-		this.tocSelectEl = this.toolbarEl.createEl("select", {
-			cls: "reader-epub-toc",
-		});
-		this.registerDomEvent(this.tocSelectEl, "change", () => {
-			void this.jumpToSelectedSection();
-		});
+			this.tocSelectEl = this.toolbarEl.createEl("select", {
+				cls: "reader-epub-toc",
+			});
+			this.registerDomEvent(this.tocSelectEl, "change", () => {
+				void this.jumpToSelectedSection();
+			});
 
-		this.chapterTitleEl = this.toolbarEl.createDiv({
-			cls: "reader-epub-chapter",
-			text: "",
-		});
+			this.chapterTitleEl = this.toolbarEl.createDiv({
+				cls: "reader-epub-chapter",
+				text: "",
+			});
+			this.updateMobileToolbarCollapsedState();
+		} else {
+			this.mobileToolbarToggleButtonEl = null;
+			this.toolbarEl = null;
+			this.tocSelectEl = null;
+			this.chapterTitleEl = null;
+		}
 
 		this.readerContainerEl = this.contentEl.createDiv({
 			cls: "reader-epub-container",
 		});
 
-		this.populateToc([]);
+		this.syncToolbarDom();
 	}
 
 	private populateToc(items: NavItem[]): void {
-		if (!this.tocSelectEl) {
-			return;
-		}
-
-		this.clearSelect(this.tocSelectEl);
 		this.tocLabelByHref.clear();
-
-		const defaultOption = this.tocSelectEl.createEl("option", {
-			text: "Table of contents",
-			value: "",
-		});
-		defaultOption.selected = true;
-
-		this.addTocItems(items, 0);
+		this.toolbarTocItems = this.flattenTocItems(items, 0);
+		if (this.toolbarSelectedHrefKey && !this.hasMatchingTocItem(this.toolbarSelectedHrefKey)) {
+			this.toolbarSelectedHrefKey = null;
+		}
+		this.syncToolbarDom();
+		this.notifyToolbarStateChange();
 	}
 
-	private addTocItems(items: NavItem[], depth: number): void {
-		if (!this.tocSelectEl) {
-			return;
-		}
-
+	private flattenTocItems(items: NavItem[], depth: number): ReaderToolbarTocItem[] {
+		const flattenedItems: ReaderToolbarTocItem[] = [];
 		for (const item of items) {
 			const labelPrefix = depth > 0 ? `${"  ".repeat(depth)}- ` : "";
-			const option = this.tocSelectEl.createEl("option", {
-				text: `${labelPrefix}${item.label}`,
+			const hrefKey = this.normalizeHref(item.href);
+			flattenedItems.push({
+				label: `${labelPrefix}${item.label}`,
 				value: item.href,
+				hrefKey,
 			});
-			option.dataset.hrefKey = this.normalizeHref(item.href);
-
-			this.tocLabelByHref.set(this.normalizeHref(item.href), item.label);
+			this.tocLabelByHref.set(hrefKey, item.label);
 
 			if (item.subitems && item.subitems.length > 0) {
-				this.addTocItems(item.subitems, depth + 1);
+				flattenedItems.push(...this.flattenTocItems(item.subitems, depth + 1));
 			}
 		}
+
+		return flattenedItems;
+	}
+
+	private hasMatchingTocItem(hrefKey: string): boolean {
+		return this.toolbarTocItems.some((item) => item.hrefKey === hrefKey);
 	}
 
 	private async jumpToSelectedSection(): Promise<void> {
-		if (!this.rendition || !this.tocSelectEl) {
+		if (!this.tocSelectEl) {
 			return;
 		}
 
@@ -452,12 +509,10 @@ export class EpubReaderView extends FileView {
 			return;
 		}
 
-		try {
-			await this.rendition.display(selected);
-		} catch (error: unknown) {
-			console.error("Failed to jump by TOC", error);
-			new Notice(NOTICE_EPUB_NAVIGATION_FAILED);
-		}
+		this.toolbarSelectedHrefKey = this.normalizeHref(selected);
+		this.syncToolbarDom();
+		this.notifyToolbarStateChange();
+		await this.jumpToSection(selected);
 	}
 
 	private async displayWithFallback(savedLocation?: string): Promise<void> {
@@ -547,35 +602,22 @@ export class EpubReaderView extends FileView {
 	private updateCurrentSection(href: string): void {
 		const normalizedHref = this.normalizeHref(href);
 		const title = this.tocLabelByHref.get(normalizedHref) ?? href;
-		if (this.chapterTitleEl) {
-			this.chapterTitleEl.setText(title);
-		}
-		this.selectTocByHref(normalizedHref);
+		this.toolbarChapterTitle = title;
+		this.toolbarSelectedHrefKey = this.findBestMatchingHrefKey(normalizedHref);
+		this.syncToolbarDom();
+		this.notifyToolbarStateChange();
 	}
 
-	private selectTocByHref(normalizedHref: string): void {
-		if (!this.tocSelectEl) {
-			return;
-		}
-
-		const options = Array.from(this.tocSelectEl.options);
-		const exact = options.find((option) => option.dataset.hrefKey === normalizedHref);
+	private findBestMatchingHrefKey(normalizedHref: string): string | null {
+		const exact = this.toolbarTocItems.find((item) => item.hrefKey === normalizedHref);
 		if (exact) {
-			exact.selected = true;
-			return;
+			return exact.hrefKey;
 		}
 
-		const partial = options.find((option) => {
-			const hrefKey = option.dataset.hrefKey;
-			if (!hrefKey) {
-				return false;
-			}
-			return normalizedHref.startsWith(hrefKey) || hrefKey.startsWith(normalizedHref);
-		});
-
-		if (partial) {
-			partial.selected = true;
-		}
+		const partial = this.toolbarTocItems.find(
+			(item) => normalizedHref.startsWith(item.hrefKey) || item.hrefKey.startsWith(normalizedHref),
+		);
+		return partial?.hrefKey ?? null;
 	}
 
 	private renderState(message: string, isError = false): void {
@@ -590,17 +632,67 @@ export class EpubReaderView extends FileView {
 		}
 		stateEl.setText(message);
 
-		if (this.chapterTitleEl) {
-			this.chapterTitleEl.setText("");
-		}
-		if (this.tocSelectEl) {
-			this.tocSelectEl.value = "";
-		}
+		this.toolbarChapterTitle = "";
+		this.toolbarSelectedHrefKey = null;
+		this.syncToolbarDom();
+		this.notifyToolbarStateChange();
 	}
 
 	private clearSelect(selectEl: HTMLSelectElement): void {
 		while (selectEl.firstChild) {
 			selectEl.removeChild(selectEl.firstChild);
+		}
+	}
+
+	private syncToolbarDom(): void {
+		if (this.chapterTitleEl) {
+			this.chapterTitleEl.setText(this.toolbarChapterTitle);
+		}
+		if (!this.tocSelectEl) {
+			return;
+		}
+
+		this.clearSelect(this.tocSelectEl);
+		const defaultOption = this.tocSelectEl.createEl("option", {
+			text: "Table of contents",
+			value: "",
+		});
+		defaultOption.selected = true;
+
+		for (const item of this.toolbarTocItems) {
+			const option = this.tocSelectEl.createEl("option", {
+				text: item.label,
+				value: item.value,
+			});
+			option.dataset.hrefKey = item.hrefKey;
+		}
+
+		const selectedTocItem = this.toolbarSelectedHrefKey
+			? this.toolbarTocItems.find((item) => item.hrefKey === this.toolbarSelectedHrefKey)
+			: null;
+		if (selectedTocItem) {
+			this.tocSelectEl.value = selectedTocItem.value;
+		} else {
+			this.tocSelectEl.value = "";
+		}
+	}
+
+	private updateMobileToolbarCollapsedState(): void {
+		if (!Platform.isMobile) {
+			return;
+		}
+		if (this.toolbarEl) {
+			this.toolbarEl.toggleClass("is-collapsed", this.isMobileToolbarCollapsed);
+		}
+		if (this.mobileToolbarToggleButtonEl) {
+			this.mobileToolbarToggleButtonEl.setText(this.isMobileToolbarCollapsed ? "Show controls" : "Hide controls");
+		}
+	}
+
+	private notifyToolbarStateChange(): void {
+		const state = this.getToolbarState();
+		for (const listener of this.toolbarStateListeners) {
+			listener(state);
 		}
 	}
 
@@ -923,6 +1015,11 @@ ${MONOSPACE_WRAP_CSS}`;
 		this.footnotePopoverController = null;
 
 		this.tocLabelByHref.clear();
+		this.toolbarTocItems = [];
+		this.toolbarChapterTitle = "";
+		this.toolbarSelectedHrefKey = null;
 		this.keyboardBoundDocuments = new WeakSet<Document>();
+		this.syncToolbarDom();
+		this.notifyToolbarStateChange();
 	}
 }

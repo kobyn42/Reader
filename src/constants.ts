@@ -1,4 +1,5 @@
 export const VIEW_TYPE_EPUB = "reader-epub-view";
+export const VIEW_TYPE_EPUB_TOOLBAR = "reader-epub-toolbar-view";
 export const EPUB_EXTENSION = "epub";
 
 export const COMMAND_OPEN_EPUB_FILE = "open-epub-file";

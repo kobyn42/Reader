@@ -1,21 +1,26 @@
-import { Plugin, TAbstractFile, TFile } from "obsidian";
+import { Platform, Plugin, TAbstractFile, TFile, WorkspaceLeaf } from "obsidian";
 import {
 	EPUB_EXTENSION,
 	VIEW_TYPE_EPUB,
+	VIEW_TYPE_EPUB_TOOLBAR,
 } from "./constants";
 import { registerReaderCommands } from "./commands/register-commands";
 import { DEFAULT_SETTINGS, ReaderSettingTab } from "./settings";
 import type { PageDisplayMode, ReaderAppearanceTheme, ReaderPluginSettings } from "./types";
 import { EpubReaderView } from "./views/epub-view";
+import { EpubToolbarSideView } from "./views/epub-toolbar-side-view";
 
 export default class ReaderPlugin extends Plugin {
 	settings: ReaderPluginSettings;
 	private isAutoAppearanceThemeSyncQueued = false;
+	private isToolbarSyncQueued = false;
+	private lastFocusedReaderLeaf: WorkspaceLeaf | null = null;
 
 	async onload(): Promise<void> {
 		await this.loadSettings();
 
 		this.registerView(VIEW_TYPE_EPUB, (leaf) => new EpubReaderView(leaf, this));
+		this.registerView(VIEW_TYPE_EPUB_TOOLBAR, (leaf) => new EpubToolbarSideView(leaf, this));
 		this.registerExtensions([EPUB_EXTENSION], VIEW_TYPE_EPUB);
 
 		registerReaderCommands(this);
@@ -39,6 +44,22 @@ export default class ReaderPlugin extends Plugin {
 			}),
 		);
 
+		this.registerEvent(
+			this.app.workspace.on("active-leaf-change", (leaf) => {
+				this.handleActiveLeafChange(leaf);
+			}),
+		);
+
+		this.registerEvent(
+			this.app.workspace.on("layout-change", () => {
+				this.queueToolbarSideViewSync();
+			}),
+		);
+
+		this.app.workspace.onLayoutReady(() => {
+			this.queueToolbarSideViewSync();
+		});
+
 		const darkSchemeMediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
 		const onSystemColorSchemeChange = (): void => {
 			this.queueAutoAppearanceThemeSync();
@@ -47,6 +68,10 @@ export default class ReaderPlugin extends Plugin {
 		this.register(() => {
 			darkSchemeMediaQuery.removeEventListener("change", onSystemColorSchemeChange);
 		});
+	}
+
+	async onunload(): Promise<void> {
+		this.app.workspace.detachLeavesOfType(VIEW_TYPE_EPUB_TOOLBAR);
 	}
 
 	async loadSettings(): Promise<void> {
@@ -89,6 +114,25 @@ export default class ReaderPlugin extends Plugin {
 			});
 		}
 		await this.app.workspace.revealLeaf(leaf);
+		this.lastFocusedReaderLeaf = leaf;
+		this.queueToolbarSideViewSync();
+	}
+
+	getPreferredReaderView(): EpubReaderView | null {
+		const activeView = this.app.workspace.getActiveViewOfType(EpubReaderView);
+		if (activeView) {
+			return activeView;
+		}
+
+		if (this.lastFocusedReaderLeaf?.view instanceof EpubReaderView) {
+			const openReaderLeaves = this.app.workspace.getLeavesOfType(VIEW_TYPE_EPUB);
+			if (openReaderLeaves.includes(this.lastFocusedReaderLeaf)) {
+				return this.lastFocusedReaderLeaf.view;
+			}
+		}
+
+		const firstOpenReaderView = this.getOpenReaderViews()[0];
+		return firstOpenReaderView ?? null;
 	}
 
 	async applyPageDisplayModeToOpenViews(mode?: PageDisplayMode): Promise<void> {
@@ -124,6 +168,72 @@ export default class ReaderPlugin extends Plugin {
 			}
 			void this.applyAppearanceThemeToOpenViews("auto");
 		});
+	}
+
+	private handleActiveLeafChange(leaf: WorkspaceLeaf | null): void {
+		if (leaf?.view instanceof EpubReaderView) {
+			this.lastFocusedReaderLeaf = leaf;
+		}
+		this.refreshToolbarSideViews();
+	}
+
+	private getOpenReaderViews(): EpubReaderView[] {
+		return this.app.workspace
+			.getLeavesOfType(VIEW_TYPE_EPUB)
+			.map((leaf) => (leaf.view instanceof EpubReaderView ? leaf.view : null))
+			.filter((view): view is EpubReaderView => view !== null);
+	}
+
+	private queueToolbarSideViewSync(): void {
+		if (this.isToolbarSyncQueued) {
+			return;
+		}
+
+		this.isToolbarSyncQueued = true;
+		window.requestAnimationFrame(() => {
+			this.isToolbarSyncQueued = false;
+			void this.syncToolbarSideViewVisibility();
+		});
+	}
+
+	private async syncToolbarSideViewVisibility(): Promise<void> {
+		if (Platform.isMobile) {
+			this.app.workspace.detachLeavesOfType(VIEW_TYPE_EPUB_TOOLBAR);
+			return;
+		}
+
+		const openReaderViews = this.getOpenReaderViews();
+		if (openReaderViews.length === 0) {
+			this.app.workspace.detachLeavesOfType(VIEW_TYPE_EPUB_TOOLBAR);
+			return;
+		}
+
+		let sideToolbarLeaf = this.app.workspace.getLeavesOfType(VIEW_TYPE_EPUB_TOOLBAR)[0];
+		if (!sideToolbarLeaf) {
+			sideToolbarLeaf = this.app.workspace.getRightLeaf(true) ?? undefined;
+		}
+		if (!sideToolbarLeaf) {
+			return;
+		}
+
+		if (sideToolbarLeaf.view.getViewType() !== VIEW_TYPE_EPUB_TOOLBAR) {
+			await sideToolbarLeaf.setViewState({
+				type: VIEW_TYPE_EPUB_TOOLBAR,
+				active: false,
+			});
+		}
+
+		this.refreshToolbarSideViews();
+	}
+
+	private refreshToolbarSideViews(): void {
+		const leaves = this.app.workspace.getLeavesOfType(VIEW_TYPE_EPUB_TOOLBAR);
+		for (const leaf of leaves) {
+			if (!(leaf.view instanceof EpubToolbarSideView)) {
+				continue;
+			}
+			leaf.view.requestRefresh();
+		}
 	}
 
 	private async handleFileDelete(file: TAbstractFile): Promise<void> {
