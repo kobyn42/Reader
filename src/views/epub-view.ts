@@ -52,6 +52,14 @@ interface PrefetchSectionLike {
 	load?: (request?: PrefetchRequestMethod) => Promise<unknown>;
 }
 
+interface PendingTapNavigationGesture {
+	touchIdentifier: number;
+	startX: number;
+	startY: number;
+	startedAt: number;
+	target: EventTarget | null;
+}
+
 const EMPTY_STATE_TEXT = "Select an EPUB file to start reading.";
 const ERROR_STATE_TEXT = "Unable to render this EPUB file.";
 const LOADING_STATE_TEXT = "Loading EPUB...";
@@ -60,6 +68,10 @@ const APPEARANCE_THEME_RULE_KEY = "reader-appearance-theme";
 const SCROLL_ANCHORING_RULE_PROPERTY = "overflow-anchor";
 const AUTO_MIN_SPREAD_WIDTH = 800;
 const ALWAYS_MIN_SPREAD_WIDTH = 0;
+const TAP_NAVIGATION_LEFT_ZONE_MAX_RATIO = 0.4;
+const TAP_NAVIGATION_RIGHT_ZONE_MIN_RATIO = 0.6;
+const TAP_NAVIGATION_MAX_DURATION_MS = 350;
+const TAP_NAVIGATION_MAX_MOVE_PX = 10;
 const READER_THEME_CLASS_NAMES = ["reader-theme-light", "reader-theme-dark", "reader-theme-sepia"];
 const MONOSPACE_WRAP_CSS = `
 pre, pre code {
@@ -80,6 +92,8 @@ export class EpubReaderView extends FileView {
 	private book: Book | null = null;
 	private rendition: Rendition | null = null;
 	private keyboardBoundDocuments = new WeakSet<Document>();
+	private tapNavigationBoundDocuments = new WeakSet<Document>();
+	private tapNavigationPendingGestures = new WeakMap<Document, PendingTapNavigationGesture>();
 	private footnotePopoverController: FootnotePopoverController | null = null;
 
 	private toolbarEl: HTMLElement | null = null;
@@ -159,6 +173,18 @@ export class EpubReaderView extends FileView {
 		}
 		targetDocument.addEventListener("keydown", this.handleArrowNavigationKeydown);
 		this.keyboardBoundDocuments.add(targetDocument);
+	};
+
+	private tapNavigationHookHandler = async (contents: Contents): Promise<void> => {
+		const targetDocument = contents.document;
+		if (this.tapNavigationBoundDocuments.has(targetDocument)) {
+			return;
+		}
+		targetDocument.addEventListener("touchstart", this.handleTapNavigationTouchStart);
+		targetDocument.addEventListener("touchmove", this.handleTapNavigationTouchMove);
+		targetDocument.addEventListener("touchend", this.handleTapNavigationTouchEnd);
+		targetDocument.addEventListener("touchcancel", this.handleTapNavigationTouchCancel);
+		this.tapNavigationBoundDocuments.add(targetDocument);
 	};
 
 	private footnotePopoverHookHandler = async (contents: Contents): Promise<void> => {
@@ -403,6 +429,7 @@ export class EpubReaderView extends FileView {
 			this.rendition.hooks.content.register(this.mediaFitHookHandler);
 			this.rendition.hooks.content.register(this.appearanceThemeHookHandler);
 			this.rendition.hooks.content.register(this.keyboardNavigationHookHandler);
+			this.rendition.hooks.content.register(this.tapNavigationHookHandler);
 			this.rendition.hooks.content.register(this.footnotePopoverHookHandler);
 			this.rendition.hooks.content.register(this.scrollAnchoringWorkaroundHookHandler);
 			this.applyScrollAnchoringWorkaroundToStageContainer();
@@ -581,6 +608,125 @@ export class EpubReaderView extends FileView {
 		}
 	};
 
+	private handleTapNavigationTouchStart = (event: TouchEvent): void => {
+		const targetDocument = this.extractDocumentFromEvent(event);
+		if (!targetDocument) {
+			return;
+		}
+		if (!this.shouldHandleTapNavigationEvent(event, targetDocument)) {
+			this.tapNavigationPendingGestures.delete(targetDocument);
+			return;
+		}
+		if (event.touches.length !== 1) {
+			this.tapNavigationPendingGestures.delete(targetDocument);
+			return;
+		}
+
+		const touch = event.touches[0];
+		if (!touch) {
+			this.tapNavigationPendingGestures.delete(targetDocument);
+			return;
+		}
+		this.tapNavigationPendingGestures.set(targetDocument, {
+			touchIdentifier: touch.identifier,
+			startX: touch.clientX,
+			startY: touch.clientY,
+			startedAt: Date.now(),
+			target: event.target,
+		});
+	};
+
+	private handleTapNavigationTouchMove = (event: TouchEvent): void => {
+		const targetDocument = this.extractDocumentFromEvent(event);
+		if (!targetDocument) {
+			return;
+		}
+
+		const pending = this.tapNavigationPendingGestures.get(targetDocument);
+		if (!pending) {
+			return;
+		}
+		if (event.touches.length !== 1) {
+			this.tapNavigationPendingGestures.delete(targetDocument);
+			return;
+		}
+
+		const touch = this.findTouchByIdentifier(event.touches, pending.touchIdentifier);
+		if (!touch) {
+			this.tapNavigationPendingGestures.delete(targetDocument);
+			return;
+		}
+
+		const moveX = Math.abs(touch.clientX - pending.startX);
+		const moveY = Math.abs(touch.clientY - pending.startY);
+		if (moveX > TAP_NAVIGATION_MAX_MOVE_PX || moveY > TAP_NAVIGATION_MAX_MOVE_PX) {
+			this.tapNavigationPendingGestures.delete(targetDocument);
+		}
+	};
+
+	private handleTapNavigationTouchEnd = (event: TouchEvent): void => {
+		const targetDocument = this.extractDocumentFromEvent(event);
+		if (!targetDocument) {
+			return;
+		}
+
+		const pending = this.tapNavigationPendingGestures.get(targetDocument);
+		this.tapNavigationPendingGestures.delete(targetDocument);
+		if (!pending) {
+			return;
+		}
+		if (!this.shouldHandleTapNavigationEvent(event, targetDocument)) {
+			return;
+		}
+		if (event.touches.length > 0) {
+			return;
+		}
+
+		const endedTouch = this.findTouchByIdentifier(event.changedTouches, pending.touchIdentifier);
+		if (!endedTouch) {
+			return;
+		}
+
+		const elapsedMs = Date.now() - pending.startedAt;
+		if (elapsedMs > TAP_NAVIGATION_MAX_DURATION_MS) {
+			return;
+		}
+
+		const moveX = Math.abs(endedTouch.clientX - pending.startX);
+		const moveY = Math.abs(endedTouch.clientY - pending.startY);
+		if (moveX > TAP_NAVIGATION_MAX_MOVE_PX || moveY > TAP_NAVIGATION_MAX_MOVE_PX) {
+			return;
+		}
+		if (this.hasTextSelection(targetDocument)) {
+			return;
+		}
+		if (this.isTapNavigationIgnoredTarget(pending.target) || this.isTapNavigationIgnoredTarget(event.target)) {
+			return;
+		}
+
+		const viewportWidth = this.getDocumentViewportWidth(targetDocument);
+		if (!viewportWidth) {
+			return;
+		}
+
+		const positionRatio = endedTouch.clientX / viewportWidth;
+		if (positionRatio <= TAP_NAVIGATION_LEFT_ZONE_MAX_RATIO) {
+			void this.prevPage();
+			return;
+		}
+		if (positionRatio >= TAP_NAVIGATION_RIGHT_ZONE_MIN_RATIO) {
+			void this.nextPage();
+		}
+	};
+
+	private handleTapNavigationTouchCancel = (event: TouchEvent): void => {
+		const targetDocument = this.extractDocumentFromEvent(event);
+		if (!targetDocument) {
+			return;
+		}
+		this.tapNavigationPendingGestures.delete(targetDocument);
+	};
+
 	private isActiveReaderView(): boolean {
 		return this.app.workspace.getActiveViewOfType(EpubReaderView) === this;
 	}
@@ -597,6 +743,77 @@ export class EpubReaderView extends FileView {
 		}
 
 		return eventElement.closest("input, textarea, select, [contenteditable=''], [contenteditable='true']") !== null;
+	}
+
+	private shouldHandleTapNavigationEvent(event: TouchEvent, targetDocument: Document): boolean {
+		if (event.defaultPrevented) {
+			return false;
+		}
+		if (!this.rendition) {
+			return false;
+		}
+		if (!this.isActiveReaderView()) {
+			return false;
+		}
+		if (this.plugin.settings.pageDisplayMode === "scroll-continuous") {
+			return false;
+		}
+		if (!targetDocument.defaultView) {
+			return false;
+		}
+		return true;
+	}
+
+	private extractDocumentFromEvent(event: Event): Document | null {
+		return event.currentTarget instanceof Document ? event.currentTarget : null;
+	}
+
+	private findTouchByIdentifier(touches: TouchList, identifier: number): Touch | null {
+		for (let index = 0; index < touches.length; index += 1) {
+			const touch = touches.item(index);
+			if (touch?.identifier === identifier) {
+				return touch;
+			}
+		}
+		return null;
+	}
+
+	private hasTextSelection(targetDocument: Document): boolean {
+		const selectedText = targetDocument.getSelection()?.toString().trim() ?? "";
+		return selectedText.length > 0;
+	}
+
+	private isTapNavigationIgnoredTarget(target: EventTarget | null): boolean {
+		const maybeNode = target as { nodeType?: number; parentElement?: Element | null } | null;
+		if (!maybeNode) {
+			return false;
+		}
+
+		const eventElement = maybeNode.nodeType === 1 ? (target as Element) : maybeNode.parentElement;
+		if (!eventElement) {
+			return false;
+		}
+
+		return (
+			eventElement.closest(
+				"a, button, input, textarea, select, option, label, summary, [role='button'], [contenteditable=''], [contenteditable='true']",
+			) !== null
+		);
+	}
+
+	private getDocumentViewportWidth(targetDocument: Document): number | null {
+		const documentWidth = targetDocument.documentElement.clientWidth;
+		if (documentWidth > 0) {
+			return documentWidth;
+		}
+
+		const bodyWidth = targetDocument.body?.clientWidth ?? 0;
+		if (bodyWidth > 0) {
+			return bodyWidth;
+		}
+
+		const viewportWidth = targetDocument.defaultView?.innerWidth ?? 0;
+		return viewportWidth > 0 ? viewportWidth : null;
 	}
 
 	private async loadToc(): Promise<void> {
@@ -1102,6 +1319,11 @@ ${MONOSPACE_WRAP_CSS}`;
 				console.debug("Failed to detach keyboard navigation hook handler", error);
 			}
 			try {
+				this.rendition.hooks.content.deregister(this.tapNavigationHookHandler);
+			} catch (error: unknown) {
+				console.debug("Failed to detach tap navigation hook handler", error);
+			}
+			try {
 				this.rendition.hooks.content.deregister(this.footnotePopoverHookHandler);
 			} catch (error: unknown) {
 				console.debug("Failed to detach footnote popover hook handler", error);
@@ -1117,6 +1339,14 @@ ${MONOSPACE_WRAP_CSS}`;
 					contents.document.removeEventListener("keydown", this.handleArrowNavigationKeydown);
 				} catch (error: unknown) {
 					console.debug("Failed to detach keyboard navigation listener", error);
+				}
+				try {
+					contents.document.removeEventListener("touchstart", this.handleTapNavigationTouchStart);
+					contents.document.removeEventListener("touchmove", this.handleTapNavigationTouchMove);
+					contents.document.removeEventListener("touchend", this.handleTapNavigationTouchEnd);
+					contents.document.removeEventListener("touchcancel", this.handleTapNavigationTouchCancel);
+				} catch (error: unknown) {
+					console.debug("Failed to detach tap navigation listeners", error);
 				}
 				if (footnoteController) {
 					try {
@@ -1158,6 +1388,8 @@ ${MONOSPACE_WRAP_CSS}`;
 		this.toolbarChapterTitle = "";
 		this.toolbarSelectedHrefKey = null;
 		this.keyboardBoundDocuments = new WeakSet<Document>();
+		this.tapNavigationBoundDocuments = new WeakSet<Document>();
+		this.tapNavigationPendingGestures = new WeakMap<Document, PendingTapNavigationGesture>();
 		this.syncToolbarDom();
 		this.notifyToolbarStateChange();
 	}

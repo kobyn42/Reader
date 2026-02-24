@@ -9,6 +9,7 @@ Reader is an Obsidian plugin for reading EPUB files inside your vault.
 - Navigate with:
   - Desktop right sidebar toolbar: `Prev` / `Next`, TOC, chapter title
   - Mobile top toolbar: `Prev` / `Next`, TOC, chapter title (toggle with `Show controls`)
+  - Touch tap navigation (paged modes only): left 40% = previous page, right 40% = next page, center 20% = no action
   - Keyboard: `Left Arrow` / `Right Arrow`
   - Commands: `Previous page` / `Next page`
 - Jump by table of contents (TOC)
@@ -19,6 +20,7 @@ Reader is an Obsidian plugin for reading EPUB files inside your vault.
   - `Two pages`
   - `Single page`
   - `Infinite scroll`
+  - Note: touch tap navigation is disabled in `Infinite scroll`
 - Choose appearance:
   - `Follow Obsidian`
   - `Light`
